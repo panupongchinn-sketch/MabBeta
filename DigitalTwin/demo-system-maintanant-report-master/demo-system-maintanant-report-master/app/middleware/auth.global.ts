@@ -22,7 +22,7 @@ export default defineNuxtRouteMiddleware((to) => {
   const isAdminSetup = path === '/admin/setup'
 
   // หน้า Auth/Public
-  const authPages = ['/login', '/signup', '/activate']
+  const authPages = ['/login', '/activate']
   const isAuthPage = authPages.includes(path)
 
   const currentUser = user.value
