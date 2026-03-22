@@ -11,6 +11,13 @@ export default defineNuxtConfig({
   },
   nitro: {
     preset: "static",
+    prerender: {
+      ignore: ['/my-courses', '/my-courses/**'],
+    },
+  },
+  routeRules: {
+    '/my-courses': { ssr: false },
+    '/my-courses/**': { ssr: false },
   },
   css: ["./app/assets/css/main.css"],
   vite: {
