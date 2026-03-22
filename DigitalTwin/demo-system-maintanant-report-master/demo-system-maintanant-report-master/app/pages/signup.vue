@@ -1,194 +1,118 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center p-4 relative"
-    style="background-image:url('/bg.png');background-size:cover;background-position:center;background-repeat:no-repeat;">
-    <div class="w-full max-w-md relative z-10">
-      <!-- Single Card -->
-      <div class="bg-white rounded-2xl shadow-2xl overflow-hidden">
+  <div class="min-h-screen flex items-center justify-center p-6 relative"
+    style="background-image:url('/bg.png');background-size:cover;background-position:center;background-repeat:no-repeat;background-attachment:fixed;">
+
+    <div class="w-full relative z-10 flex gap-4 items-stretch" style="max-width:calc(100vw - 48px);height:calc(100vh - 48px)">
+
+      <!-- ── การ์ดซ้าย: Slideshow ── -->
+      <div class="hidden lg:flex bg-white rounded-2xl shadow-2xl overflow-hidden flex-col" style="flex:1;min-width:0;">
+
+        <!-- รูปสไลด์ -->
+        <div class="relative flex-1 overflow-hidden">
+          <transition name="slide-fade" mode="out-in">
+            <img :key="slide" :src="'/' + slide + '.png'"
+              class="absolute inset-0 w-full h-full object-cover"
+              style="transition:opacity .5s ease" />
+          </transition>
+
+          <!-- ปุ่มซ้าย/ขวา -->
+          <button @click="prev"
+            class="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center transition-colors z-10">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          </button>
+          <button @click="next"
+            class="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center transition-colors z-10">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </button>
+
+          <!-- overlay gradient bottom -->
+          <div class="absolute bottom-0 inset-x-0 h-24 z-10" style="background:linear-gradient(transparent,rgba(0,0,0,.5))"></div>
+
+          <!-- counter -->
+          <span class="absolute bottom-4 right-4 z-20 text-white text-xs font-semibold bg-black/40 rounded-full px-3 py-1">
+            {{ slide }} / 8
+          </span>
+        </div>
+
+        <!-- Thumbnails -->
+        <div class="flex gap-1.5 p-3 bg-slate-50 border-t border-slate-100 overflow-x-auto" style="scrollbar-width:none">
+          <img v-for="i in 8" :key="i" :src="'/' + i + '.png'"
+            @click="slide = i"
+            class="rounded-lg object-cover flex-shrink-0 cursor-pointer transition-all"
+            :class="slide === i ? 'ring-2 ring-red-500 opacity-100' : 'opacity-60 hover:opacity-90'"
+            style="height:52px;width:76px;" />
+        </div>
+      </div>
+
+      <!-- ── การ์ดขวา: ฟอร์ม ── -->
+      <div class="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col" style="width:420px;flex-shrink:0;overflow-y:auto;">
+
         <!-- Logo -->
-        <div class="flex justify-center pt-8 pb-4 px-6">
+        <div class="flex justify-center pt-8 pb-3 px-6">
           <img src="/dt-hero.jpg" alt="MapBeta Digital Twin"
-            style="max-height:110px;width:auto;object-fit:contain;" />
+            style="max-height:80px;width:auto;object-fit:contain;" />
         </div>
 
         <div class="px-6 pb-3">
-          <h2 class="text-lg font-semibold text-slate-800">สมัครสมาชิก</h2>
-          <p class="text-sm text-slate-500">กรอกข้อมูลเพื่อสร้างบัญชีใหม่</p>
+          <h2 class="text-lg font-semibold text-slate-800">ลงทะเบียน</h2>
+          <p class="text-sm text-slate-500">ระบบจัดการเมืองอัจฉริยะ</p>
         </div>
 
-        <!-- Step indicator -->
-        <div class="px-6 pt-4">
-          <div class="flex items-center gap-2">
-            <div class="flex items-center gap-1.5">
-              <span class="w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold flex items-center justify-center">1</span>
-              <span class="text-xs font-medium text-slate-700">สมัครสมาชิก</span>
-            </div>
-            <div class="flex-1 h-px bg-slate-200"></div>
-            <div class="flex items-center gap-1.5">
-              <span class="w-6 h-6 rounded-full bg-slate-200 text-slate-500 text-xs font-bold flex items-center justify-center">2</span>
-              <span class="text-xs text-slate-400">กรอก License Key</span>
-            </div>
-            <div class="flex-1 h-px bg-slate-200"></div>
-            <div class="flex items-center gap-1.5">
-              <span class="w-6 h-6 rounded-full bg-slate-200 text-slate-500 text-xs font-bold flex items-center justify-center">3</span>
-              <span class="text-xs text-slate-400">เข้าใช้งาน</span>
-            </div>
-          </div>
-        </div>
+        <form class="px-6 pb-6 pt-2 space-y-3 flex-1" @submit.prevent="handleSignup">
 
-        <form class="px-6 pb-6 pt-4 space-y-4" @submit.prevent="handleSignup">
-          <!-- Full name -->
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">
-              ชื่อ-นามสกุล <span class="text-red-500">*</span>
-            </label>
-            <input
-              v-model.trim="name"
-              type="text"
-              placeholder="ชื่อ-นามสกุล"
-              required
-              class="w-full h-11 rounded-lg border border-slate-300 px-3
-                     focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400
-                     transition-colors text-slate-900"
-              :disabled="isLoading"
-            />
+            <label class="block text-sm font-medium text-slate-700 mb-1">ชื่อ-นามสกุล <span class="text-red-500">*</span></label>
+            <input v-model.trim="name" type="text" placeholder="ชื่อ-นามสกุล" required :disabled="isLoading"
+              class="w-full h-11 rounded-lg border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors text-slate-900" />
           </div>
 
-          <!-- Organization -->
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">
-              บริษัท / หน่วยงาน <span class="text-red-500">*</span>
-            </label>
-            <input
-              v-model.trim="organization"
-              type="text"
-              placeholder="ชื่อบริษัทหรือหน่วยงาน"
-              required
-              class="w-full h-11 rounded-lg border border-slate-300 px-3
-                     focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400
-                     transition-colors text-slate-900"
-              :disabled="isLoading"
-            />
+            <label class="block text-sm font-medium text-slate-700 mb-1">บริษัท / หน่วยงาน <span class="text-red-500">*</span></label>
+            <input v-model.trim="organization" type="text" placeholder="ชื่อบริษัทหรือหน่วยงาน" required :disabled="isLoading"
+              class="w-full h-11 rounded-lg border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors text-slate-900" />
           </div>
 
-          <!-- Email -->
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">
-              อีเมล <span class="text-red-500">*</span>
-            </label>
-            <input
-              v-model.trim="email"
-              type="email"
-              autocomplete="username"
-              placeholder="example@email.com"
-              required
-              class="w-full h-11 rounded-lg border border-slate-300 px-3
-                     focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400
-                     transition-colors text-slate-900"
-              :disabled="isLoading"
-            />
+            <label class="block text-sm font-medium text-slate-700 mb-1">อีเมล <span class="text-red-500">*</span></label>
+            <input v-model.trim="email" type="email" autocomplete="username" placeholder="example@email.com" required :disabled="isLoading"
+              class="w-full h-11 rounded-lg border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors text-slate-900" />
           </div>
 
-          <!-- Password -->
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">
-              รหัสผ่าน <span class="text-red-500">*</span>
-            </label>
-            <div class="relative">
-              <input
-                v-model="password"
-                :type="showPw ? 'text' : 'password'"
-                autocomplete="new-password"
-                placeholder="อย่างน้อย 8 ตัวอักษร"
-                required
-                minlength="8"
-                class="w-full h-11 rounded-lg border border-slate-300 px-3 pr-20
-                       focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400
-                       transition-colors text-slate-900"
-                :disabled="isLoading"
-              />
-              <button
-                type="button"
-                class="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-3 rounded-md
-                       text-sm font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
-                @click="showPw = !showPw"
-                :disabled="isLoading"
-              >
-                {{ showPw ? 'ซ่อน' : 'ดู' }}
-              </button>
-            </div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">เบอร์โทรศัพท์ <span class="text-red-500">*</span></label>
+            <input v-model.trim="phone" type="tel" placeholder="0812345678" required :disabled="isLoading"
+              class="w-full h-11 rounded-lg border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors text-slate-900" />
           </div>
 
-          <!-- Confirm Password -->
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">
-              ยืนยันรหัสผ่าน <span class="text-red-500">*</span>
-            </label>
-            <input
-              v-model="confirmPassword"
-              type="password"
-              autocomplete="new-password"
-              placeholder="กรอกรหัสผ่านอีกครั้ง"
-              required
-              minlength="8"
-              class="w-full h-11 rounded-lg border border-slate-300 px-3
-                     focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400
-                     transition-colors text-slate-900"
-              :class="{ 'border-red-400': confirmPassword && password !== confirmPassword }"
-              :disabled="isLoading"
-            />
-            <p v-if="confirmPassword && password !== confirmPassword"
-              class="text-xs text-red-500 mt-1">รหัสผ่านไม่ตรงกัน</p>
+            <label class="block text-sm font-medium text-slate-700 mb-1">รายละเอียดเพิ่มเติม</label>
+            <textarea v-model.trim="notes" placeholder="ระบุความต้องการหรือข้อมูลเพิ่มเติม..." rows="3" :disabled="isLoading"
+              class="w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors text-slate-900 resize-none" />
           </div>
 
-          <!-- Success -->
-          <div v-if="successMessage"
-            class="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
-            <svg class="w-4 h-4 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd"
-                d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                clip-rule="evenodd" />
-            </svg>
+          <div v-if="successMessage" class="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
+            <svg class="w-4 h-4 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>
             {{ successMessage }}
           </div>
 
-          <!-- Error -->
-          <div v-if="errorMessage"
-            class="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-            <svg class="w-4 h-4 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd"
-                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                clip-rule="evenodd" />
-            </svg>
+          <div v-if="errorMessage" class="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+            <svg class="w-4 h-4 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" /></svg>
             {{ errorMessage }}
           </div>
 
-          <!-- Submit -->
-          <button
-            type="submit"
-            :disabled="isLoading || (!!confirmPassword && password !== confirmPassword)"
-            class="w-full h-11 rounded-lg bg-red-600 text-white font-semibold shadow-sm
-                   hover:bg-red-700 active:bg-red-800 transition-colors
-                   disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            <span v-if="!isLoading">สร้างบัญชี</span>
+          <button type="submit" :disabled="isLoading"
+            class="w-full h-11 rounded-lg bg-red-600 text-white font-semibold shadow-sm hover:bg-red-700 active:bg-red-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+            <span v-if="!isLoading">ส่งข้อมูล</span>
             <span v-else class="inline-flex items-center justify-center gap-2">
               <span class="inline-block h-4 w-4 rounded-full border-2 border-white/60 border-t-white animate-spin"></span>
-              กำลังสร้างบัญชี...
+              กำลังส่งข้อมูล...
             </span>
           </button>
 
-          <!-- Links -->
-          <div class="pt-1 text-center text-sm text-slate-500">
-            มีบัญชีอยู่แล้ว?
-            <NuxtLink to="/login" class="font-semibold text-red-600 hover:text-red-700">
-              เข้าสู่ระบบ
-            </NuxtLink>
-          </div>
-          <p class="text-center text-xs text-slate-400 pt-2">
-            © {{ new Date().getFullYear() }} MapBeta Digital Twin
-          </p>
+          <p class="text-center text-xs text-slate-400 pt-1">© {{ new Date().getFullYear() }} MapBeta Digital Twin</p>
         </form>
       </div>
+
     </div>
   </div>
 </template>
@@ -197,52 +121,53 @@
 definePageMeta({ layout: 'empty' })
 useHead({ title: 'สมัครสมาชิก | MapBeta' })
 
+const { $supabase } = useNuxtApp() as any
+
 const name = ref('')
 const organization = ref('')
 const email = ref('')
-const password = ref('')
-const confirmPassword = ref('')
-const showPw = ref(false)
+const phone = ref('')
+const notes = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const isLoading = ref(false)
 
-const { signUp } = useCustomAuth()
+// Slideshow
+const slide = ref(1)
+let timer: ReturnType<typeof setInterval> | null = null
+
+const next = () => { slide.value = slide.value >= 8 ? 1 : slide.value + 1 }
+const prev = () => { slide.value = slide.value <= 1 ? 8 : slide.value - 1 }
+
+onMounted(() => { timer = setInterval(next, 4000) })
+onUnmounted(() => { if (timer) clearInterval(timer) })
 
 const handleSignup = async () => {
   errorMessage.value = ''
   successMessage.value = ''
 
-  if (!name.value.trim()) {
-    errorMessage.value = 'กรุณากรอกชื่อ-นามสกุล'
-    return
-  }
-  if (!organization.value.trim()) {
-    errorMessage.value = 'กรุณากรอกชื่อบริษัท / หน่วยงาน'
-    return
-  }
-  if (password.value.length < 8) {
-    errorMessage.value = 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร'
-    return
-  }
-  if (password.value !== confirmPassword.value) {
-    errorMessage.value = 'รหัสผ่านไม่ตรงกัน'
-    return
-  }
+  if (!name.value.trim()) { errorMessage.value = 'กรุณากรอกชื่อ-นามสกุล'; return }
+  if (!organization.value.trim()) { errorMessage.value = 'กรุณากรอกชื่อบริษัท / หน่วยงาน'; return }
+  if (!email.value.trim()) { errorMessage.value = 'กรุณากรอกอีเมล'; return }
+  if (!phone.value.trim()) { errorMessage.value = 'กรุณากรอกเบอร์โทรศัพท์'; return }
 
   isLoading.value = true
   try {
-    const { error } = await signUp(email.value, password.value, name.value, organization.value)
+    const { error } = await $supabase
+      .from('contact_requests')
+      .insert({
+        name: name.value.trim(),
+        organization: organization.value.trim(),
+        email: email.value.toLowerCase().trim(),
+        phone: phone.value.trim(),
+        notes: notes.value.trim() || null,
+        status: 'new',
+      })
 
-    if (error) {
-      errorMessage.value = error.message || 'สมัครสมาชิกไม่สำเร็จ'
-      return
-    }
+    if (error) { errorMessage.value = error.message || 'ส่งข้อมูลไม่สำเร็จ กรุณาลองใหม่'; return }
 
-    successMessage.value = 'สร้างบัญชีสำเร็จ! กรุณาเข้าสู่ระบบ...'
-    setTimeout(() => {
-      navigateTo('/login')
-    }, 1000)
+    successMessage.value = 'ส่งข้อมูลสำเร็จ! ทีมงานจะติดต่อกลับเร็วๆ นี้'
+    name.value = ''; organization.value = ''; email.value = ''; phone.value = ''; notes.value = ''
   } catch (err: any) {
     errorMessage.value = err?.message || 'เกิดข้อผิดพลาด กรุณาลองใหม่'
   } finally {
@@ -250,3 +175,9 @@ const handleSignup = async () => {
   }
 }
 </script>
+
+<style scoped>
+.slide-fade-enter-active, .slide-fade-leave-active { transition: opacity .5s ease; position: absolute; inset: 0; }
+.slide-fade-enter-from, .slide-fade-leave-to { opacity: 0; }
+div::-webkit-scrollbar { display: none; }
+</style>

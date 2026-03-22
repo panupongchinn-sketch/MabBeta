@@ -18,6 +18,13 @@
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        <NuxtLink to="/admin/contacts"
+          style="display:flex;align-items:center;gap:6px;font-size:13px;color:#0369a1;padding:8px 16px;border-radius:9px;text-decoration:none;font-weight:600;border:1px solid #bae6fd;background:#f0f9ff;transition:all .15s"
+          onmouseover="this.style.background='#e0f2fe';this.style.borderColor='#7dd3fc'"
+          onmouseout="this.style.background='#f0f9ff';this.style.borderColor='#bae6fd'">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z"/></svg>
+          ผู้ติดต่อ
+        </NuxtLink>
         <NuxtLink to="/"
           style="display:flex;align-items:center;gap:6px;font-size:13px;color:#475569;padding:8px 16px;border-radius:9px;text-decoration:none;font-weight:500;border:1px solid #e2e8f0;background:#fff;transition:all .15s"
           onmouseover="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1';this.style.color='#0f172a'"
