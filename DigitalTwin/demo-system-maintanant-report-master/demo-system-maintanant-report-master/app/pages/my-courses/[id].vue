@@ -81,6 +81,7 @@
 </template>
 
 <script setup lang="ts">
+defineRouteRules({ prerender: false })
 definePageMeta({ middleware: ["auth"] })
 
 type Course = { id: string; title: string; description: string | null; thumbnail_url: string | null }

@@ -96,6 +96,7 @@
 </template>
 
 <script setup lang="ts">
+defineRouteRules({ prerender: false })
 definePageMeta({ middleware: ["auth"] })
 
 type Course = {
