@@ -56,8 +56,9 @@ export default defineNuxtRouteMiddleware((to) => {
     return navigateTo('/')
   }
 
-  // ถ้าเข้าหน้า Admin แต่ไม่ใช่ super_admin → redirect ไปหน้าหลัก
-  if (isAdminPage && !isAdminSetup && currentUser.role !== 'super_admin') {
+  // ถ้าเข้าหน้า Admin แต่ไม่ใช่ super_admin และไม่ใช่ email ที่อนุญาต → redirect ไปหน้าหลัก
+  const isAdminAllowed = currentUser.role === 'super_admin' || currentUser.email === 'panupong.chinn@gmail.com'
+  if (isAdminPage && !isAdminSetup && !isAdminAllowed) {
     return navigateTo('/')
   }
 })
