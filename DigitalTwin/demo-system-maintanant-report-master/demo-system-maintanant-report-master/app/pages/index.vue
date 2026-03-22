@@ -506,6 +506,7 @@ function clearTrafficLayer() {
   if (trafficGroup) { scene?.remove(trafficGroup); trafficGroup = null }
 }
 
+
 function toggleTrafficLayer() {
   trafficVisible.value = !trafficVisible.value
   if (trafficVisible.value) {
@@ -4472,7 +4473,7 @@ onBeforeUnmount(() => {
 
         <!-- User / Admin -->
         <div style="display:flex;align-items:center;gap:6px;margin-left:4px;padding-left:8px;border-left:1px solid rgba(255,255,255,0.12)">
-          <NuxtLink v-if="authUser?.role === 'super_admin' || authUser?.email === 'panupong.chinn@gmail.com'" to="/admin"
+          <NuxtLink v-if="authUser?.email === 'panupong.chinn@gmail.com'" to="/admin"
             style="height:28px;padding:0 10px;border-radius:6px;font-size:0.65rem;font-weight:600;
                    background:rgba(147,51,234,0.2);color:#c084fc;border:1px solid rgba(147,51,234,0.3);
                    display:inline-flex;align-items:center;gap:4px;white-space:nowrap;text-decoration:none;
