@@ -121,6 +121,7 @@
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">บริษัท / หน่วยงาน</th>
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">อีเมล</th>
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">เบอร์โทร</th>
+              <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">รายละเอียด</th>
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">วันที่</th>
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">สถานะ</th>
               <th style="padding:14px 20px;text-align:left;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">การดำเนินการ</th>
@@ -147,6 +148,11 @@
                 <!-- Phone -->
                 <td style="padding:16px 20px">
                   <a :href="'tel:' + c.phone" style="font-size:13px;color:#475569;text-decoration:none">{{ c.phone || '-' }}</a>
+                </td>
+                <!-- Notes -->
+                <td style="padding:16px 20px;max-width:260px">
+                  <span v-if="c.notes" style="font-size:12.5px;color:#475569;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ c.notes }}</span>
+                  <span v-else style="font-size:12px;color:#cbd5e1">-</span>
                 </td>
                 <!-- Date -->
                 <td style="padding:16px 20px;font-size:12px;color:#94a3b8;white-space:nowrap">{{ formatDate(c.created_at) }}</td>
@@ -177,7 +183,7 @@
               </tr>
               <!-- Notes row -->
               <tr v-if="expandedId === c.id && c.notes" style="background:#fafafa;border-bottom:1px solid #f1f5f9">
-                <td colspan="7" style="padding:12px 20px 16px 74px">
+                <td colspan="8" style="padding:12px 20px 16px 74px">
                   <p style="margin:0;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">รายละเอียดเพิ่มเติม</p>
                   <p style="margin:0;font-size:13px;color:#475569;line-height:1.6;white-space:pre-wrap">{{ c.notes }}</p>
                 </td>
