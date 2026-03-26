@@ -332,7 +332,7 @@ const MAP_SURFACE_SIZE = 1100
 const MAP_TILE_SPAN = 11
 const PROJECT_ASSET_BUCKET = "digital-twin-project-files"
 const TERRAIN_SEG = 64                        // 64×64 subdivisions → 65×65 vertices
-const TERRAIN_ELEV_SCALE = 0.1
+// TERRAIN_ELEV_SCALE ถูกแทนที่ด้วย getTerrainElevScale(reliefM) — ภูเขา=0.5 พื้นราบ=0.1
 const BUILDING_CURVE_SEGMENTS = 1
 const GROUND_CURVE_SEGMENTS = 2
 const BUILDING_YIELD_EVERY = 40
@@ -2255,6 +2255,10 @@ function getTerrainExaggeration(reliefM: number) {
   return 1.0
 }
 
+function getTerrainElevScale(reliefM: number) {
+  return reliefM >= 200 ? 0.5 : 0.1
+}
+
 async function loadTerrain(lat: number, lng: number, z: number) {
   if (!THREE || !mapSurfaceMesh) return
   // Flatten first so old terrain doesn't linger if new fetch fails
@@ -2330,10 +2334,12 @@ async function loadTerrain(lat: number, lng: number, z: number) {
     if (fieldMeters[i] < minH) minH = fieldMeters[i]
     if (fieldMeters[i] > maxH) maxH = fieldMeters[i]
   }
-  const exaggeration = getTerrainExaggeration(Math.max(0, maxH - minH))
+  const reliefM = Math.max(0, maxH - minH)
+  const exaggeration = getTerrainExaggeration(reliefM)
+  const elevScale = getTerrainElevScale(reliefM)
   const field = new Float32Array(fieldMeters.length)
   for (let i = 0; i < field.length; i++) {
-    field[i] = Math.max(0, fieldMeters[i] - minH) * wupm * TERRAIN_ELEV_SCALE * exaggeration
+    field[i] = Math.max(0, fieldMeters[i] - minH) * wupm * elevScale * exaggeration
   }
 
   terrainField = field
