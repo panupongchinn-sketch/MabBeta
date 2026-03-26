@@ -334,6 +334,7 @@ const PROJECT_ASSET_BUCKET = "digital-twin-project-files"
 const TERRAIN_SEG = 64                        // 64×64 subdivisions → 65×65 vertices
 const TERRAIN_ELEV_SCALE = 1.0                // 1.0 = proportional to building scale (wupm)
 const BUILDING_CURVE_SEGMENTS = 1
+const GROUND_CURVE_SEGMENTS = 2
 const BUILDING_YIELD_EVERY = 40
 const TREE_YIELD_EVERY = 120
 const MAX_BUILDING_GEOMETRY_CACHE = 1200
@@ -341,6 +342,7 @@ const objectUrlPool: string[] = []
 let osmBuildingGroup: any = null
 let osmOuterBuildingGroups: any[] = []
 let osmTreeGroup: any = null
+let osmVegetationGroup: any = null
 let osmLoadToken = 0
 // terrain heightfield (in world units), indexed [iy*(TERRAIN_SEG+1)+ix]
 let terrainField: Float32Array | null = null
@@ -1931,6 +1933,7 @@ function addMapBackdrop() {
     new THREE.MeshLambertMaterial({
       color: 0xffffff,
       fog: false,
+      vertexColors: true,
     }),
   )
   mapSurface.rotation.x = -Math.PI / 2
@@ -2192,12 +2195,73 @@ function getTerrainHeight(worldX: number, worldZ: number): number {
   return h00 * (1 - tx) * (1 - ty) + h10 * tx * (1 - ty) + h01 * (1 - tx) * ty + h11 * tx * ty
 }
 
+function applyMapSurfaceVertexColors(field: Float32Array | null) {
+  if (!THREE || !mapSurfaceMesh?.geometry) return
+  const seg = TERRAIN_SEG
+  const geo = mapSurfaceMesh.geometry
+  const count = (seg + 1) * (seg + 1)
+  let attr = geo.getAttribute?.("color")
+  if (!attr || attr.count !== count) {
+    attr = new THREE.BufferAttribute(new Float32Array(count * 3), 3)
+    geo.setAttribute("color", attr)
+  }
+
+  const color = new THREE.Color()
+  if (!field) {
+    for (let i = 0; i < count; i++) {
+      color.setRGB(1, 1, 1)
+      attr.setXYZ(i, color.r, color.g, color.b)
+    }
+    attr.needsUpdate = true
+    return
+  }
+
+  let minH = Infinity
+  let maxH = -Infinity
+  for (let i = 0; i < field.length; i++) {
+    const h = field[i]
+    if (h < minH) minH = h
+    if (h > maxH) maxH = h
+  }
+  const relief = Math.max(1e-6, maxH - minH)
+
+  for (let iy = 0; iy <= seg; iy++) {
+    for (let ix = 0; ix <= seg; ix++) {
+      const idx = iy * (seg + 1) + ix
+      const h = field[idx]
+      const left = field[iy * (seg + 1) + Math.max(0, ix - 1)] ?? h
+      const right = field[iy * (seg + 1) + Math.min(seg, ix + 1)] ?? h
+      const down = field[Math.max(0, iy - 1) * (seg + 1) + ix] ?? h
+      const up = field[Math.min(seg, iy + 1) * (seg + 1) + ix] ?? h
+      const slope = Math.min(1, Math.hypot(right - left, up - down) / 6.5)
+      const heightT = Math.max(0, Math.min(1, (h - minH) / relief))
+
+      const shade = Math.max(0.74, Math.min(1.06, 0.98 - slope * 0.28 + heightT * 0.06))
+      const r = Math.max(0.78, Math.min(1.02, 0.98 - heightT * 0.08 - slope * 0.05))
+      const g = Math.max(0.8, Math.min(1.06, 0.99 + heightT * 0.02 - slope * 0.03))
+      const b = Math.max(0.78, Math.min(1.04, 0.98 - heightT * 0.03 - slope * 0.07))
+      color.setRGB(r * shade, g * shade, b * shade)
+      attr.setXYZ(idx, color.r, color.g, color.b)
+    }
+  }
+  attr.needsUpdate = true
+}
+
+function getTerrainExaggeration(reliefM: number) {
+  if (reliefM >= 700) return 1.7
+  if (reliefM >= 350) return 1.48
+  if (reliefM >= 160) return 1.28
+  if (reliefM >= 70) return 1.14
+  return 1.02
+}
+
 async function loadTerrain(lat: number, lng: number, z: number) {
   if (!THREE || !mapSurfaceMesh) return
   // Flatten first so old terrain doesn't linger if new fetch fails
   const posInit = mapSurfaceMesh.geometry.attributes.position
   for (let i = 0; i < posInit.count; i++) posInit.setZ(i, 0)
   posInit.needsUpdate = true
+  applyMapSurfaceVertexColors(null)
   const tileWidthM  = (2 * Math.PI * 6371000 * Math.cos(lat * Math.PI / 180)) / Math.pow(2, z)
   const wupm        = (MAP_SURFACE_SIZE / MAP_TILE_SPAN) / tileWidthM
   terrainWorldUnitsPerMeter = wupm
@@ -2242,7 +2306,7 @@ async function loadTerrain(lat: number, lng: number, z: number) {
   const mosaicH   = mosaicN - mosaicS
 
   const seg       = TERRAIN_SEG
-  const field     = new Float32Array((seg + 1) * (seg + 1))
+  const fieldMeters = new Float32Array((seg + 1) * (seg + 1))
 
   for (let iy = 0; iy <= seg; iy++) {
     for (let ix = 0; ix <= seg; ix++) {
@@ -2253,7 +2317,7 @@ async function loadTerrain(lat: number, lng: number, z: number) {
       const di    = (py * totalW + px) * 4
       const r     = imgData.data[di], g = imgData.data[di + 1], b = imgData.data[di + 2]
       const elevM = Math.max(0, (r * 256 + g + b / 256) - 32768)
-      field[iy * (seg + 1) + ix] = elevM * wupm * TERRAIN_ELEV_SCALE
+      fieldMeters[iy * (seg + 1) + ix] = elevM
     }
   }
 
@@ -2261,8 +2325,16 @@ async function loadTerrain(lat: number, lng: number, z: number) {
   // Without this, even flat Bangkok (≈5 m ASL) lifts the map surface above
   // y=0 and buildings/trees placed at y=0 appear to float or sink.
   let minH = Infinity
-  for (let i = 0; i < field.length; i++) if (field[i] < minH) minH = field[i]
-  if (minH > 0) for (let i = 0; i < field.length; i++) field[i] -= minH
+  let maxH = -Infinity
+  for (let i = 0; i < fieldMeters.length; i++) {
+    if (fieldMeters[i] < minH) minH = fieldMeters[i]
+    if (fieldMeters[i] > maxH) maxH = fieldMeters[i]
+  }
+  const exaggeration = getTerrainExaggeration(Math.max(0, maxH - minH))
+  const field = new Float32Array(fieldMeters.length)
+  for (let i = 0; i < field.length; i++) {
+    field[i] = Math.max(0, fieldMeters[i] - minH) * wupm * TERRAIN_ELEV_SCALE * exaggeration
+  }
 
   terrainField = field
 
@@ -2276,6 +2348,7 @@ async function loadTerrain(lat: number, lng: number, z: number) {
   }
   posAttr.needsUpdate = true
   mapSurfaceMesh.geometry.computeVertexNormals()
+  applyMapSurfaceVertexColors(field)
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2351,9 +2424,8 @@ function fetchOSMData(lat: number, lng: number, z: number) {
   const cBbox = `${cS},${cW},${cN},${cE}`
   const fullBbox = `${south},${west},${north},${east}`
 
-  // Query เดียว: พืชพรรณ/ป่าใช้ full bbox เพื่อให้ขึ้นทั้งแผนที่,
-  // ส่วนอาคารยังใช้ center bbox เพื่อลดภาระ Overpass
-  const osmQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${fullBbox});node["natural"="tree_row"](${fullBbox});way["natural"="wood"](${fullBbox});relation["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});relation["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});relation["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});relation["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});relation["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});relation["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});relation["natural"="heath"](${fullBbox});way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
+  const vegetationQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${fullBbox});node["natural"="tree_row"](${fullBbox});way["natural"="wood"](${fullBbox});relation["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});relation["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});relation["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});relation["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});relation["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});relation["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});relation["natural"="heath"](${fullBbox}););(._;>;);out body;`
+  const buildingQuery = `[out:json][timeout:25][maxsize:67108864];(way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
 
   // Supabase: 4 quadrant parallel (ไม่มี rate limit)
   const sq1 = `/api/buildings?south=${midLat}&west=${west}&north=${north}&east=${midLng}`
@@ -2366,24 +2438,31 @@ function fetchOSMData(lat: number, lng: number, z: number) {
 
   // ยิงทั้ง 2 mirrors พร้อมกัน — เอาตัวที่ตอบกลับก่อน (Promise.any)
   // ลด latency จาก "รอ timeout แล้วค่อย fallback" → "ใครเร็วกว่าได้ไปเลย"
-  const tryMirror = (host: string) =>
-    fetch(`${host}/api/interpreter?data=${encodeURIComponent(osmQuery)}`,
+  const tryMirror = (host: string, query: string) =>
+    fetch(`${host}/api/interpreter?data=${encodeURIComponent(query)}`,
       { signal: AbortSignal.timeout(20_000) })
       .then(r => { if (!r.ok) throw new Error(String(r.status)); return r })
-  const osmFetch = Promise.any([
-    tryMirror('https://overpass-api.de'),
-    tryMirror('https://overpass.kumi.systems'),
-  ])
+  const fetchOverpassJson = (query: string) =>
+    Promise.any([
+      tryMirror('https://overpass-api.de', query),
+      tryMirror('https://overpass.kumi.systems', query),
+    ]).then(r => r.json())
 
-  const [osmResult, r1, r2, r3, r4, rMs] = await Promise.allSettled([
-    osmFetch,
+  const [buildingOsmResult, vegetationOsmResult, r1, r2, r3, r4, rMs] = await Promise.allSettled([
+    fetchOverpassJson(buildingQuery),
+    fetchOverpassJson(vegetationQuery),
     fetch(sq1), fetch(sq2), fetch(sq3), fetch(sq4),
     fetch(msUrl),
   ])
 
-  if (osmResult.status !== "fulfilled") throw osmResult.reason
+  if (buildingOsmResult.status !== "fulfilled") throw buildingOsmResult.reason
+  if (vegetationOsmResult.status !== "fulfilled") throw vegetationOsmResult.reason
 
-  const osmData = await osmResult.value.json()
+  const osmElements = new Map<string, any>()
+  for (const element of [...buildingOsmResult.value.elements, ...vegetationOsmResult.value.elements]) {
+    osmElements.set(`${element.type}:${element.id}`, element)
+  }
+  const osmData = { elements: [...osmElements.values()] }
 
   // รวม Supabase buildings จากทุก quadrant (dedup ที่ขอบ)
   const allBuildings: BuildingsMlRow[] = []
@@ -2431,6 +2510,11 @@ function clearOSMGroups() {
     disposeObject3D(osmTreeGroup)
     osmTreeGroup = null
   }
+  if (osmVegetationGroup) {
+    scene?.remove(osmVegetationGroup)
+    disposeObject3D(osmVegetationGroup)
+    osmVegetationGroup = null
+  }
   for (const g of osmOuterBuildingGroups) {
     scene?.remove(g)
     disposeObject3D(g)
@@ -2477,6 +2561,24 @@ function normalizeWorldRing(pts: { x: number; z: number }[]) {
 
 async function yieldToBrowser() {
   await new Promise(r => setTimeout(r, 0))
+}
+
+function pushGroundOverlayGeometry(
+  ptsRaw: { x: number; z: number }[],
+  y: number,
+  geos: any[],
+) {
+  const pts = normalizeWorldRing(ptsRaw)
+  if (pts.length < 3) return false
+  const shape = new THREE.Shape()
+  shape.moveTo(pts[0].x, -pts[0].z)
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+  shape.closePath()
+  const geo = new THREE.ShapeGeometry(shape, GROUND_CURVE_SEGMENTS)
+  geo.rotateX(-Math.PI / 2)
+  geo.translate(0, y, 0)
+  geos.push(geo)
+  return true
 }
 
 function pushBuildingGeometries(
@@ -2580,6 +2682,7 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
 
   const wallGeos: any[] = []
   const roofGeos: any[] = []
+  const vegetationGeos: any[] = []
   const treeInstances: Array<{ x: number; z: number; y: number; trunkH: number; trunkR: number; crownR: number; crownStretch: number }> = []
   const treeBudget = getTreeRenderBudget(z)
   const treeCells = new Set<string>()
@@ -2639,6 +2742,12 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
       }
       if (ok) tryCollectTree(tx, tz, getTerrainHeight(tx, tz))
     }
+  }
+
+  function addVegetationOverlay(pts: { x: number; z: number }[]) {
+    if (pts.length < 3) return
+    const y = bldGroundY(pts) + 0.025
+    pushGroundOverlayGeometry(pts, y, vegetationGeos)
   }
 
   // --- Pass 1: Buildings from Supabase / Microsoft ML ---
@@ -2800,7 +2909,9 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
       const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25) * treeBudget.densityScale
 
       if (el.type === "way" && (el.nodes?.length ?? 0) >= 3) {
-        scatterTreesInPolygon(collectWorldPtsFromNodeIds(el.nodes), density)
+        const pts = collectWorldPtsFromNodeIds(el.nodes)
+        addVegetationOverlay(pts)
+        scatterTreesInPolygon(pts, density)
       }
 
       if (el.type === "relation" && el.members?.length) {
@@ -2811,12 +2922,29 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
           if (!memberNodeIds || memberNodeIds.length < 3) continue
           const pts = collectWorldPtsFromNodeIds(memberNodeIds)
           if (pts.length >= 3) {
+            addVegetationOverlay(pts)
             scatterTreesInPolygon(pts, density)
           }
         }
       }
     }
   }
+
+  await yieldToBrowser()
+  if (token !== osmLoadToken) return
+
+  osmVegetationGroup = new THREE.Group()
+  addMergedGeos(
+    vegetationGeos,
+    new THREE.MeshLambertMaterial({
+      color: 0x7ea566,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+    }),
+    osmVegetationGroup,
+  )
+  scene.add(osmVegetationGroup)
 
   await yieldToBrowser()
   if (token !== osmLoadToken) return
