@@ -2401,6 +2401,42 @@ function parseBuildingGeometry(geometry: string): number[][][] {
   return out
 }
 
+function appendUniqueBuildings(
+  rows: BuildingsMlRow[],
+  target: BuildingsMlRow[],
+  seenIds: Set<string>,
+  precision = 6,
+) {
+  for (const row of rows) {
+    const key = `${row.lat.toFixed(precision)},${row.lng.toFixed(precision)}`
+    if (seenIds.has(key)) continue
+    seenIds.add(key)
+    target.push(row)
+  }
+}
+
+async function fetchBuildingsViaSupabaseClient(bounds: Array<{ south: number; west: number; north: number; east: number }>) {
+  if (!$supabase?.from) return []
+
+  const settled = await Promise.allSettled(bounds.map(b =>
+    $supabase
+      .from('buildings_ml')
+      .select('lat,lng,geometry,area_m2')
+      .gte('lat', b.south).lte('lat', b.north)
+      .gte('lng', b.west).lte('lng', b.east)
+      .limit(5000)
+  ))
+
+  const rows: BuildingsMlRow[] = []
+  const seenIds = new Set<string>()
+  for (const result of settled) {
+    if (result.status !== "fulfilled") continue
+    if (result.value?.error) continue
+    appendUniqueBuildings(result.value?.data ?? [], rows, seenIds, 6)
+  }
+  return rows
+}
+
 function fetchOSMData(lat: number, lng: number, z: number) {
   const tileXk = Math.floor(lonToTileX(lng, z))
   const tileYk = Math.floor(latToTileY(lat, z))
@@ -2432,6 +2468,12 @@ function fetchOSMData(lat: number, lng: number, z: number) {
   const sq2 = `/api/buildings?south=${midLat}&west=${midLng}&north=${north}&east=${east}`
   const sq3 = `/api/buildings?south=${south}&west=${west}&north=${midLat}&east=${midLng}`
   const sq4 = `/api/buildings?south=${south}&west=${midLng}&north=${midLat}&east=${east}`
+  const supabaseQuadrants = [
+    { south: midLat, west, north, east: midLng },
+    { south: midLat, west: midLng, north, east },
+    { south, west, north: midLat, east: midLng },
+    { south, west: midLng, north: midLat, east },
+  ]
 
   // Microsoft Global ML Building Footprints (ครอบคลุมทั่วไทยรวมพื้นที่ชนบท)
   const msUrl = `/api/ms-buildings?south=${south}&west=${west}&north=${north}&east=${east}`
@@ -2467,23 +2509,26 @@ function fetchOSMData(lat: number, lng: number, z: number) {
   // รวม Supabase buildings จากทุก quadrant (dedup ที่ขอบ)
   const allBuildings: BuildingsMlRow[] = []
   const seenIds = new Set<string>()
+  let serverBuildingFetchesOk = 0
   for (const r of [r1, r2, r3, r4]) {
     if (r.status !== "fulfilled" || !r.value.ok) continue
+    serverBuildingFetchesOk++
     const rows: BuildingsMlRow[] = await r.value.json()
-    for (const row of rows) {
-      const key = `${row.lat.toFixed(6)},${row.lng.toFixed(6)}`
-      if (!seenIds.has(key)) { seenIds.add(key); allBuildings.push(row) }
-    }
+    appendUniqueBuildings(rows, allBuildings, seenIds, 6)
+  }
+
+  // Static deploy (เช่น pages.dev preset static) จะไม่มี /api/buildings
+  // fallback ไปใช้ public Supabase client เพื่อให้ deploy กับ local ใกล้กัน
+  if (serverBuildingFetchesOk < 4) {
+    const browserRows = await fetchBuildingsViaSupabaseClient(supabaseQuadrants)
+    appendUniqueBuildings(browserRows, allBuildings, seenIds, 6)
   }
 
   // เพิ่ม Microsoft buildings (ใช้เมื่อ Supabase ไม่มีข้อมูล เช่น พื้นที่ชนบท)
   if (rMs.status === "fulfilled" && rMs.value.ok) {
     try {
       const msRows: BuildingsMlRow[] = await rMs.value.json()
-      for (const row of msRows) {
-        const key = `${row.lat.toFixed(5)},${row.lng.toFixed(5)}`
-        if (!seenIds.has(key)) { seenIds.add(key); allBuildings.push(row) }
-      }
+      appendUniqueBuildings(msRows, allBuildings, seenIds, 5)
     } catch { /* ไม่มี MS data — ไม่เป็นไร */ }
   }
 
