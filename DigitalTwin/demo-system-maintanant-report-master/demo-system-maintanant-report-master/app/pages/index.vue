@@ -333,6 +333,10 @@ const MAP_TILE_SPAN = 11
 const PROJECT_ASSET_BUCKET = "digital-twin-project-files"
 const TERRAIN_SEG = 64                        // 64×64 subdivisions → 65×65 vertices
 const TERRAIN_ELEV_SCALE = 1.0                // 1.0 = proportional to building scale (wupm)
+const BUILDING_CURVE_SEGMENTS = 1
+const BUILDING_YIELD_EVERY = 40
+const TREE_YIELD_EVERY = 120
+const MAX_BUILDING_GEOMETRY_CACHE = 1200
 const objectUrlPool: string[] = []
 let osmBuildingGroup: any = null
 let osmOuterBuildingGroups: any[] = []
@@ -351,7 +355,9 @@ interface OSMSceneData {
   osm: any
   buildings: BuildingsMlRow[]
 }
-const osmDataCache = new Map<string, OSMSceneData>()  // cache by "tileX,tileY,z"
+const buildingGeometryCache = new Map<string, number[][][]>()
+const osmDataCache    = new Map<string, OSMSceneData>()         // cache by "tileX,tileY,z"
+const osmFetchInFlight = new Map<string, Promise<OSMSceneData>>() // dedup concurrent fetches
 const osmBuilding3dLoading = ref(false)
 const osmLoadingPct = ref(0)
 const osmLoadingStep = ref("")
@@ -2276,6 +2282,8 @@ async function loadTerrain(lat: number, lng: number, z: number) {
 function parseBuildingGeometry(geometry: string): number[][][] {
   const text = (geometry || "").trim()
   if (!text) return []
+  const cached = buildingGeometryCache.get(text)
+  if (cached) return cached
 
   // ── GeoJSON geometry (from Microsoft / MS-buildings endpoint) ──
   if (text.startsWith("{")) {
@@ -2283,12 +2291,18 @@ function parseBuildingGeometry(geometry: string): number[][][] {
       const geom = JSON.parse(text)
       if (geom.type === "Polygon") {
         const ring = geom.coordinates?.[0]
-        return ring?.length >= 3 ? [ring] : []
+        const out = ring?.length >= 3 ? [ring] : []
+        if (buildingGeometryCache.size >= MAX_BUILDING_GEOMETRY_CACHE) buildingGeometryCache.delete(buildingGeometryCache.keys().next().value!)
+        buildingGeometryCache.set(text, out)
+        return out
       }
       if (geom.type === "MultiPolygon") {
-        return (geom.coordinates as number[][][][])
+        const out = (geom.coordinates as number[][][][])
           .map((poly: number[][][]) => poly[0])
           .filter((ring: number[][]) => ring?.length >= 3)
+        if (buildingGeometryCache.size >= MAX_BUILDING_GEOMETRY_CACHE) buildingGeometryCache.delete(buildingGeometryCache.keys().next().value!)
+        buildingGeometryCache.set(text, out)
+        return out
       }
     } catch {}
     return []
@@ -2301,7 +2315,7 @@ function parseBuildingGeometry(geometry: string): number[][][] {
       ? [...text.matchAll(/\(\((.*?)\)\)/g)].map(match => match[1])
       : []
 
-  return groups
+  const out = groups
     .map(group => group.split("),(")[0])
     .map(ring => ring
       .split(",")
@@ -2309,14 +2323,19 @@ function parseBuildingGeometry(geometry: string): number[][][] {
       .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat))
     )
     .filter(ring => ring.length >= 3)
+  if (buildingGeometryCache.size >= MAX_BUILDING_GEOMETRY_CACHE) buildingGeometryCache.delete(buildingGeometryCache.keys().next().value!)
+  buildingGeometryCache.set(text, out)
+  return out
 }
 
-async function fetchOSMData(lat: number, lng: number, z: number) {
+function fetchOSMData(lat: number, lng: number, z: number) {
   const tileXk = Math.floor(lonToTileX(lng, z))
   const tileYk = Math.floor(latToTileY(lat, z))
   const cacheKey = `${tileXk},${tileYk},${z}`
-  if (osmDataCache.has(cacheKey)) return osmDataCache.get(cacheKey)
+  if (osmDataCache.has(cacheKey)) return Promise.resolve(osmDataCache.get(cacheKey)!)
+  if (osmFetchInFlight.has(cacheKey)) return osmFetchInFlight.get(cacheKey)!
 
+  const p: Promise<OSMSceneData> = (async () => {
   const { south, west, north, east } = getMapBbox(lat, lng, z)
   const midLat = (south + north) / 2
   const midLng = (west + east) / 2
@@ -2332,8 +2351,9 @@ async function fetchOSMData(lat: number, lng: number, z: number) {
   const cBbox = `${cS},${cW},${cN},${cE}`
   const fullBbox = `${south},${west},${north},${east}`
 
-  // Query เดียว: ต้นไม้ + พืชพรรณ + น้ำ + อาคาร center (max 2 Overpass concurrent)
-  const osmQuery = `[out:json][timeout:45][maxsize:134217728];(node["natural"="tree"](${fullBbox});way["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
+  // Query เดียว: พืชพรรณ/ป่าใช้ full bbox เพื่อให้ขึ้นทั้งแผนที่,
+  // ส่วนอาคารยังใช้ center bbox เพื่อลดภาระ Overpass
+  const osmQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${fullBbox});node["natural"="tree_row"](${fullBbox});way["natural"="wood"](${fullBbox});relation["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});relation["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});relation["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});relation["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});relation["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});relation["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});relation["natural"="heath"](${fullBbox});way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
 
   // Supabase: 4 quadrant parallel (ไม่มี rate limit)
   const sq1 = `/api/buildings?south=${midLat}&west=${west}&north=${north}&east=${midLng}`
@@ -2344,18 +2364,16 @@ async function fetchOSMData(lat: number, lng: number, z: number) {
   // Microsoft Global ML Building Footprints (ครอบคลุมทั่วไทยรวมพื้นที่ชนบท)
   const msUrl = `/api/ms-buildings?south=${south}&west=${west}&north=${north}&east=${east}`
 
-  const osmFetch = (async () => {
-    for (const [mirror, ms] of [
-      ['https://overpass-api.de/api/interpreter', 20_000],
-      ['https://overpass.kumi.systems/api/interpreter', 35_000],
-    ] as [string, number][]) {
-      try {
-        const r = await fetch(`${mirror}?data=${encodeURIComponent(osmQuery)}`, { signal: AbortSignal.timeout(ms) })
-        if (r.ok) return r
-      } catch { /* try next mirror */ }
-    }
-    throw new Error('Overpass unavailable')
-  })()
+  // ยิงทั้ง 2 mirrors พร้อมกัน — เอาตัวที่ตอบกลับก่อน (Promise.any)
+  // ลด latency จาก "รอ timeout แล้วค่อย fallback" → "ใครเร็วกว่าได้ไปเลย"
+  const tryMirror = (host: string) =>
+    fetch(`${host}/api/interpreter?data=${encodeURIComponent(osmQuery)}`,
+      { signal: AbortSignal.timeout(20_000) })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r })
+  const osmFetch = Promise.any([
+    tryMirror('https://overpass-api.de'),
+    tryMirror('https://overpass.kumi.systems'),
+  ])
 
   const [osmResult, r1, r2, r3, r4, rMs] = await Promise.allSettled([
     osmFetch,
@@ -2392,16 +2410,158 @@ async function fetchOSMData(lat: number, lng: number, z: number) {
 
   const data: OSMSceneData = { osm: osmData, buildings: allBuildings }
 
-  if (osmDataCache.size >= 8) osmDataCache.delete(osmDataCache.keys().next().value)
+  if (osmDataCache.size >= 8) osmDataCache.delete(osmDataCache.keys().next().value!)
   osmDataCache.set(cacheKey, data)
   return data
+  })()  // end of IIFE
+
+  osmFetchInFlight.set(cacheKey, p)
+  p.finally(() => osmFetchInFlight.delete(cacheKey))
+  return p
 }
 
 function clearOSMGroups() {
-  if (osmBuildingGroup) { scene?.remove(osmBuildingGroup); osmBuildingGroup = null }
-  if (osmTreeGroup) { scene?.remove(osmTreeGroup); osmTreeGroup = null }
-  for (const g of osmOuterBuildingGroups) scene?.remove(g)
+  if (osmBuildingGroup) {
+    scene?.remove(osmBuildingGroup)
+    disposeObject3D(osmBuildingGroup)
+    osmBuildingGroup = null
+  }
+  if (osmTreeGroup) {
+    scene?.remove(osmTreeGroup)
+    disposeObject3D(osmTreeGroup)
+    osmTreeGroup = null
+  }
+  for (const g of osmOuterBuildingGroups) {
+    scene?.remove(g)
+    disposeObject3D(g)
+  }
   osmOuterBuildingGroups = []
+}
+
+function disposeObject3D(root: any) {
+  if (!root?.traverse) return
+  const seenGeometries = new Set<any>()
+  const seenMaterials = new Set<any>()
+  root.traverse((obj: any) => {
+    const geo = obj?.geometry
+    if (geo && !seenGeometries.has(geo)) {
+      seenGeometries.add(geo)
+      geo.dispose?.()
+    }
+    const mats = Array.isArray(obj?.material) ? obj.material : obj?.material ? [obj.material] : []
+    for (const mat of mats) {
+      if (!mat || seenMaterials.has(mat)) continue
+      seenMaterials.add(mat)
+      for (const key of ["map", "alphaMap", "aoMap", "bumpMap", "displacementMap", "emissiveMap", "envMap", "lightMap", "metalnessMap", "normalMap", "roughnessMap"]) {
+        mat[key]?.dispose?.()
+      }
+      mat.dispose?.()
+    }
+  })
+}
+
+function normalizeWorldRing(pts: { x: number; z: number }[]) {
+  const out: { x: number; z: number }[] = []
+  for (const pt of pts) {
+    const prev = out[out.length - 1]
+    if (prev && Math.abs(prev.x - pt.x) < 0.001 && Math.abs(prev.z - pt.z) < 0.001) continue
+    out.push(pt)
+  }
+  if (out.length >= 2) {
+    const first = out[0]
+    const last = out[out.length - 1]
+    if (Math.abs(first.x - last.x) < 0.001 && Math.abs(first.z - last.z) < 0.001) out.pop()
+  }
+  return out
+}
+
+async function yieldToBrowser() {
+  await new Promise(r => setTimeout(r, 0))
+}
+
+function pushBuildingGeometries(
+  ptsRaw: { x: number; z: number }[],
+  groundY: number,
+  h: number,
+  wallGeos: any[],
+  roofGeos: any[],
+) {
+  const pts = normalizeWorldRing(ptsRaw)
+  if (pts.length < 3) return false
+  const shape = new THREE.Shape()
+  shape.moveTo(pts[0].x, -pts[0].z)
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+  shape.closePath()
+
+  const wallGeo = new THREE.ExtrudeGeometry(shape, {
+    depth: h,
+    bevelEnabled: false,
+    curveSegments: BUILDING_CURVE_SEGMENTS,
+    steps: 1,
+  })
+  wallGeo.rotateX(-Math.PI / 2)
+  wallGeo.translate(0, groundY + 0.01, 0)
+  wallGeos.push(wallGeo)
+
+  const roofGeo = new THREE.ShapeGeometry(shape, BUILDING_CURVE_SEGMENTS)
+  roofGeo.rotateX(-Math.PI / 2)
+  roofGeo.translate(0, groundY + h + 0.012, 0)
+  roofGeos.push(roofGeo)
+  return true
+}
+
+function getTreeRenderBudget(z: number) {
+  if (z >= 18) return { densityScale: 1.0, maxInstances: 2600, maxPerArea: 220, cellSize: 1.4 }
+  if (z >= 17) return { densityScale: 0.72, maxInstances: 1800, maxPerArea: 150, cellSize: 1.9 }
+  return { densityScale: 0.6, maxInstances: 1800, maxPerArea: 130, cellSize: 2.3 }
+}
+
+function addTreeInstances(
+  trees: Array<{ x: number; z: number; y: number; trunkH: number; trunkR: number; crownR: number; crownStretch: number }>,
+  parent: any,
+) {
+  if (!trees.length) return
+
+  const trunkGeo = new THREE.CylinderGeometry(0.5, 1, 1, 6)
+  const crownGeo = new THREE.SphereGeometry(1, 6, 4)
+  const trunkMesh = new THREE.InstancedMesh(
+    trunkGeo,
+    new THREE.MeshLambertMaterial({ color: 0x7a5230 }),
+    trees.length,
+  )
+  const crownMesh = new THREE.InstancedMesh(
+    crownGeo,
+    new THREE.MeshLambertMaterial({ color: 0x3a7d44 }),
+    trees.length,
+  )
+  const dummy = new THREE.Object3D()
+
+  for (let i = 0; i < trees.length; i++) {
+    const tree = trees[i]
+
+    dummy.position.set(tree.x, tree.y + tree.trunkH / 2, tree.z)
+    dummy.rotation.set(0, 0, 0)
+    dummy.scale.set(tree.trunkR, tree.trunkH, tree.trunkR)
+    dummy.updateMatrix()
+    trunkMesh.setMatrixAt(i, dummy.matrix)
+
+    dummy.position.set(tree.x, tree.y + tree.trunkH + tree.crownR * 0.65, tree.z)
+    dummy.rotation.set(0, 0, 0)
+    dummy.scale.set(tree.crownR * 0.95, tree.crownR * tree.crownStretch, tree.crownR * 0.95)
+    dummy.updateMatrix()
+    crownMesh.setMatrixAt(i, dummy.matrix)
+  }
+
+  trunkMesh.instanceMatrix.needsUpdate = true
+  crownMesh.instanceMatrix.needsUpdate = true
+  trunkMesh.castShadow = true
+  trunkMesh.receiveShadow = true
+  crownMesh.castShadow = true
+  crownMesh.receiveShadow = true
+  trunkMesh.computeBoundingSphere?.()
+  crownMesh.computeBoundingSphere?.()
+  parent.add(trunkMesh)
+  parent.add(crownMesh)
 }
 
 async function buildOSMScene(data: any, centerLat: number, centerLng: number, z: number, token: number) {
@@ -2420,8 +2580,10 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
 
   const wallGeos: any[] = []
   const roofGeos: any[] = []
-  const trunkGeos: any[] = []
-  const crownGeos: any[] = []
+  const treeInstances: Array<{ x: number; z: number; y: number; trunkH: number; trunkR: number; crownR: number; crownStretch: number }> = []
+  const treeBudget = getTreeRenderBudget(z)
+  const treeCells = new Set<string>()
+  const WORLD_HALF = MAP_SURFACE_SIZE / 2
 
   // Helper: centroid terrain height for a set of world points
   function bldGroundY(pts: { x: number; z: number }[]): number {
@@ -2431,9 +2593,63 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     return getTerrainHeight(cx, cz)
   }
 
+  function tryCollectTree(x: number, zPos: number, y0 = 0) {
+    if (treeInstances.length >= treeBudget.maxInstances) return false
+    const cell = `${Math.round(x / treeBudget.cellSize)},${Math.round(zPos / treeBudget.cellSize)}`
+    if (treeCells.has(cell)) return false
+    treeCells.add(cell)
+    treeInstances.push({
+      x,
+      z: zPos,
+      y: y0,
+      trunkH: 1.0 + Math.random() * 0.8,
+      trunkR: 0.10 + Math.random() * 0.06,
+      crownR: 0.7 + Math.random() * 0.6,
+      crownStretch: 0.78 + Math.random() * 0.34,
+    })
+    return true
+  }
+
+  function collectWorldPtsFromNodeIds(nodeIds: number[]) {
+    const pts: { x: number; z: number }[] = []
+    for (const nid of nodeIds) {
+      const nd = nodeMap.get(nid)
+      if (!nd) continue
+      const wp = latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)
+      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF) pts.push(wp)
+    }
+    return pts
+  }
+
+  function scatterTreesInPolygon(pts: { x: number; z: number }[], density: number) {
+    if (pts.length < 3) return
+    const minX = Math.min(...pts.map(p => p.x))
+    const maxX = Math.max(...pts.map(p => p.x))
+    const minZ = Math.min(...pts.map(p => p.z))
+    const maxZ = Math.max(...pts.map(p => p.z))
+    const bbox = (maxX - minX) * (maxZ - minZ)
+    const count = Math.min(treeBudget.maxPerArea, Math.max(2, Math.floor(bbox * density)))
+    for (let i = 0; i < count; i++) {
+      if (treeInstances.length >= treeBudget.maxInstances) break
+      let tx = 0, tz = 0, ok = false
+      for (let t = 0; t < 6; t++) {
+        tx = minX + Math.random() * (maxX - minX)
+        tz = minZ + Math.random() * (maxZ - minZ)
+        if (pointInPoly(tx, tz, pts)) { ok = true; break }
+      }
+      if (ok) tryCollectTree(tx, tz, getTerrainHeight(tx, tz))
+    }
+  }
+
   // --- Pass 1: Buildings from Supabase / Microsoft ML ---
+  let buildingWork = 0
   for (const building of data.buildings) {
     if (token !== osmLoadToken) return
+    buildingWork++
+    if (buildingWork % BUILDING_YIELD_EVERY === 0) {
+      await yieldToBrowser()
+      if (token !== osmLoadToken) return
+    }
     const rings = parseBuildingGeometry(building.geometry)
     const heightM = Math.min(40, Math.max(6, Math.sqrt(Math.max(Number(building.area_m2) || 36, 36)) * 0.85))
     const h = Math.min(heightM * worldUnitsPerMeter, 60)
@@ -2444,29 +2660,36 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
 
     for (const ring of rings) {
       const pts = ring.map(([lngPt, latPt]) => latLngToWorld(latPt, lngPt, centerLat, centerLng, z))
-      if (pts.length < 3) continue
-
-      const shape = new THREE.Shape()
-      shape.moveTo(pts[0].x, -pts[0].z)
-      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
-      shape.closePath()
-
-      const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-      wallGeo.rotateX(-Math.PI / 2)
-      wallGeo.translate(0, groundY + 0.01, 0)
-      wallGeos.push(wallGeo)
-
-      const roofGeo = new THREE.ShapeGeometry(shape)
-      roofGeo.rotateX(-Math.PI / 2)
-      roofGeo.translate(0, groundY + h + 0.012, 0)
-      roofGeos.push(roofGeo)
+      pushBuildingGeometries(pts, groundY, h, wallGeos, roofGeos)
     }
+  }
+
+  // Build spatial dedup set from Supabase/MS buildings rendered in Pass 1.
+  // 0.0001° ≈ 11 m — fine enough to skip OSM buildings that already appear above.
+  const occupiedCells = new Set<string>()
+  for (const b of data.buildings) {
+    occupiedCells.add(`${b.lat.toFixed(4)},${b.lng.toFixed(4)}`)
   }
 
   // --- Pass 1b: Buildings from OSM Overpass ---
   for (const el of data.osm.elements) {
     if (token !== osmLoadToken) return
+    buildingWork++
+    if (buildingWork % BUILDING_YIELD_EVERY === 0) {
+      await yieldToBrowser()
+      if (token !== osmLoadToken) return
+    }
     if (el.type !== "way" || !el.tags?.building || !el.nodes?.length) continue
+
+    // Skip if this building's centroid is already covered by a Supabase/MS building
+    if (occupiedCells.size > 0) {
+      const validNds = (el.nodes as number[]).map(nid => nodeMap.get(nid)).filter(Boolean) as { lat: number; lon: number }[]
+      if (validNds.length >= 3) {
+        const cLat = validNds.reduce((s, nd) => s + nd.lat, 0) / validNds.length
+        const cLng = validNds.reduce((s, nd) => s + nd.lon, 0) / validNds.length
+        if (occupiedCells.has(`${cLat.toFixed(4)},${cLng.toFixed(4)}`)) continue
+      }
+    }
 
     const pts: { x: number; z: number }[] = []
     for (const nid of el.nodes) {
@@ -2482,27 +2705,32 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     const heightM = heightTag > 0 ? Math.min(heightTag, 200) : levels > 0 ? levels * 3.2 : defaultH
     const h = Math.min(heightM * worldUnitsPerMeter, 80)
     const groundY = bldGroundY(pts)
-
-    const shape = new THREE.Shape()
-    shape.moveTo(pts[0].x, -pts[0].z)
-    for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
-    shape.closePath()
-
-    const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-    wallGeo.rotateX(-Math.PI / 2)
-    wallGeo.translate(0, groundY + 0.01, 0)
-    wallGeos.push(wallGeo)
-
-    const roofGeo = new THREE.ShapeGeometry(shape)
-    roofGeo.rotateX(-Math.PI / 2)
-    roofGeo.translate(0, groundY + h + 0.012, 0)
-    roofGeos.push(roofGeo)
+    pushBuildingGeometries(pts, groundY, h, wallGeos, roofGeos)
   }
 
   // --- Pass 1c: Relation multipolygon buildings ---
   for (const el of data.osm.elements) {
     if (token !== osmLoadToken) return
+    buildingWork++
+    if (buildingWork % BUILDING_YIELD_EVERY === 0) {
+      await yieldToBrowser()
+      if (token !== osmLoadToken) return
+    }
     if (el.type !== "relation" || !el.tags?.building || !el.members?.length) continue
+
+    // Skip if centroid of the first outer member is already covered by Supabase/MS
+    if (occupiedCells.size > 0) {
+      const firstOuter = el.members.find((m: any) => m.type === "way" && m.role === "outer")
+      const firstNids = firstOuter ? wayMap.get(firstOuter.ref) : null
+      if (firstNids && firstNids.length >= 3) {
+        const validNds = firstNids.map(nid => nodeMap.get(nid)).filter(Boolean) as { lat: number; lon: number }[]
+        if (validNds.length >= 3) {
+          const cLat = validNds.reduce((s, nd) => s + nd.lat, 0) / validNds.length
+          const cLng = validNds.reduce((s, nd) => s + nd.lon, 0) / validNds.length
+          if (occupiedCells.has(`${cLat.toFixed(4)},${cLng.toFixed(4)}`)) continue
+        }
+      }
+    }
 
     const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
     const heightTag = parseFloat(el.tags?.["height"] || "0") || 0
@@ -2524,25 +2752,12 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
       if (pts.length < 3) continue
 
       const groundY = bldGroundY(pts)
-      const shape = new THREE.Shape()
-      shape.moveTo(pts[0].x, -pts[0].z)
-      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
-      shape.closePath()
-
-      const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-      wallGeo.rotateX(-Math.PI / 2)
-      wallGeo.translate(0, groundY + 0.01, 0)
-      wallGeos.push(wallGeo)
-
-      const roofGeo = new THREE.ShapeGeometry(shape)
-      roofGeo.rotateX(-Math.PI / 2)
-      roofGeo.translate(0, groundY + h + 0.012, 0)
-      roofGeos.push(roofGeo)
+      pushBuildingGeometries(pts, groundY, h, wallGeos, roofGeos)
     }
   }
 
   // Yield to browser between passes so the map is visible
-  await new Promise(r => setTimeout(r, 0))
+  await yieldToBrowser()
   if (token !== osmLoadToken) return
 
   // Add buildings to scene early so user sees them while water/trees are processing
@@ -2551,17 +2766,25 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
   addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), osmBuildingGroup)
   scene.add(osmBuildingGroup)
 
-  await new Promise(r => setTimeout(r, 0))
+  await yieldToBrowser()
   if (token !== osmLoadToken) return
 
-  await new Promise(r => setTimeout(r, 0))
+  await yieldToBrowser()
   if (token !== osmLoadToken) return
 
   // --- Pass 2: Trees & vegetation ---
+  let treeWork = 0
   for (const el of data.osm.elements) {
-    if (el.type === "node" && el.tags?.natural === "tree") {
+    treeWork++
+    if (treeWork % TREE_YIELD_EVERY === 0) {
+      await yieldToBrowser()
+      if (token !== osmLoadToken) return
+    }
+    if (el.type === "node" && (el.tags?.natural === "tree" || el.tags?.natural === "tree_row")) {
       const wp = latLngToWorld(el.lat, el.lon, centerLat, centerLng, z)
-      collectTree(wp.x, wp.z, trunkGeos, crownGeos, getTerrainHeight(wp.x, wp.z))
+      // ข้ามต้นไม้ที่อยู่นอก map surface
+      if (Math.abs(wp.x) > WORLD_HALF || Math.abs(wp.z) > WORLD_HALF) continue
+      tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
     }
 
     const tags = el.tags || {}
@@ -2570,43 +2793,36 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     const isScrub   = tags.natural === "scrub"     || tags.natural === "heath"
     const isOrchard = tags.landuse === "orchard"
     const isGrass   = tags.natural === "grassland"
-    const isGreenArea = el.type === "way" && (el.nodes?.length ?? 0) >= 3 &&
+    const isGreenArea = (el.type === "way" || el.type === "relation") &&
       (isForest || isPark || isScrub || isOrchard || isGrass)
 
     if (isGreenArea) {
-      const pts: { x: number; z: number }[] = []
-      for (const nid of el.nodes) {
-        const nd = nodeMap.get(nid)
-        if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z))
+      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25) * treeBudget.densityScale
+
+      if (el.type === "way" && (el.nodes?.length ?? 0) >= 3) {
+        scatterTreesInPolygon(collectWorldPtsFromNodeIds(el.nodes), density)
       }
-      if (pts.length >= 3) {
-        const minX = Math.min(...pts.map(p => p.x))
-        const maxX = Math.max(...pts.map(p => p.x))
-        const minZ = Math.min(...pts.map(p => p.z))
-        const maxZ = Math.max(...pts.map(p => p.z))
-        const bbox  = (maxX - minX) * (maxZ - minZ)
-        // density: forest/wood densest, scrub medium, park/orchard/grass sparse
-        const density = isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25
-        const count   = Math.min(400, Math.max(3, Math.floor(bbox * density)))
-        for (let i = 0; i < count; i++) {
-          let tx = 0, tz = 0, ok = false
-          for (let t = 0; t < 8; t++) {
-            tx = minX + Math.random() * (maxX - minX)
-            tz = minZ + Math.random() * (maxZ - minZ)
-            if (pointInPoly(tx, tz, pts)) { ok = true; break }
+
+      if (el.type === "relation" && el.members?.length) {
+        for (const member of el.members) {
+          if (treeInstances.length >= treeBudget.maxInstances) break
+          if (member.type !== "way" || member.role !== "outer") continue
+          const memberNodeIds = wayMap.get(member.ref)
+          if (!memberNodeIds || memberNodeIds.length < 3) continue
+          const pts = collectWorldPtsFromNodeIds(memberNodeIds)
+          if (pts.length >= 3) {
+            scatterTreesInPolygon(pts, density)
           }
-          if (ok) collectTree(tx, tz, trunkGeos, crownGeos, getTerrainHeight(tx, tz))
         }
       }
     }
   }
 
-  await new Promise(r => setTimeout(r, 0))
+  await yieldToBrowser()
   if (token !== osmLoadToken) return
 
   osmTreeGroup = new THREE.Group()
-  addMergedGeos(trunkGeos, new THREE.MeshLambertMaterial({ color: 0x7a5230 }), osmTreeGroup, true)
-  addMergedGeos(crownGeos, new THREE.MeshLambertMaterial({ color: 0x3a7d44 }), osmTreeGroup, true)
+  addTreeInstances(treeInstances, osmTreeGroup)
   scene.add(osmTreeGroup)
 }
 
@@ -2645,18 +2861,6 @@ function pointInPoly(px: number, pz: number, poly: { x: number; z: number }[]) {
   return inside
 }
 
-function collectTree(x: number, z: number, trunkGeos: any[], crownGeos: any[], y0 = 0) {
-  const trunkH = 1.0 + Math.random() * 0.8
-  const trunkR = 0.10 + Math.random() * 0.06
-  const tg = new THREE.CylinderGeometry(trunkR * 0.5, trunkR, trunkH, 6)
-  tg.translate(x, y0 + trunkH / 2, z)
-  trunkGeos.push(tg)
-  const crownR = 0.7 + Math.random() * 0.6
-  const cg = new THREE.SphereGeometry(crownR, 6, 4)
-  cg.translate(x, y0 + trunkH + crownR * 0.65, z)
-  crownGeos.push(cg)
-}
-
 async function appendOSMBuildings(elements: any[], centerLat: number, centerLng: number, z: number, token: number) {
   if (!THREE || !scene || !elements.length) return
   const tileWidthM = (2 * Math.PI * 6371000 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, z)
@@ -2672,8 +2876,14 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
   const wallGeos: any[] = []
   const roofGeos: any[] = []
 
+  let buildingWork = 0
   for (const el of elements) {
     if (token !== osmLoadToken) return
+    buildingWork++
+    if (buildingWork % BUILDING_YIELD_EVERY === 0) {
+      await yieldToBrowser()
+      if (token !== osmLoadToken) return
+    }
     if (el.type === "way" && el.tags?.building && el.nodes?.length) {
       const pts: { x: number; z: number }[] = []
       for (const nid of el.nodes) {
@@ -2687,14 +2897,7 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
       const dh = (bt === "apartments" || bt === "commercial" || bt === "office") ? 14 : 8
       const h = Math.min((ht > 0 ? Math.min(ht, 200) : levels > 0 ? levels * 3.2 : dh) * worldUnitsPerMeter, 80)
       const gy = pts.length ? getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) : 0
-      const shape = new THREE.Shape()
-      shape.moveTo(pts[0].x, -pts[0].z)
-      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
-      shape.closePath()
-      const wg = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-      wg.rotateX(-Math.PI / 2); wg.translate(0, gy + 0.01, 0); wallGeos.push(wg)
-      const rg = new THREE.ShapeGeometry(shape)
-      rg.rotateX(-Math.PI / 2); rg.translate(0, gy + h + 0.012, 0); roofGeos.push(rg)
+      pushBuildingGeometries(pts, gy, h, wallGeos, roofGeos)
     }
     if (el.type === "relation" && el.tags?.building && el.members?.length) {
       const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
@@ -2708,20 +2911,13 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
         for (const nid of nids) { const nd = nodeMap.get(nid); if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)) }
         if (pts.length < 3) continue
         const gy = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length)
-        const shape = new THREE.Shape()
-        shape.moveTo(pts[0].x, -pts[0].z)
-        for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
-        shape.closePath()
-        const wg = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-        wg.rotateX(-Math.PI / 2); wg.translate(0, gy + 0.01, 0); wallGeos.push(wg)
-        const rg = new THREE.ShapeGeometry(shape)
-        rg.rotateX(-Math.PI / 2); rg.translate(0, gy + h + 0.012, 0); roofGeos.push(rg)
+        pushBuildingGeometries(pts, gy, h, wallGeos, roofGeos)
       }
     }
   }
 
   if (!wallGeos.length || token !== osmLoadToken) return
-  await new Promise(r => setTimeout(r, 0))
+  await yieldToBrowser()
   if (token !== osmLoadToken) return
 
   const group = new THREE.Group()
@@ -2746,7 +2942,7 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
         data = await fetchOSMData(lat, lng, z)
         osmLoadingPct.value = 20
       } catch (e) {
-        const wait = attempt * 2000
+        const wait = attempt * 1000
         osmLoadingStep.value = `ดึงข้อมูลล้มเหลว รอ ${wait / 1000}s...`
         osmDataCache.delete(`${Math.floor(lonToTileX(lng, z))},${Math.floor(latToTileY(lat, z))},${Math.max(1, Math.min(20, Math.round(z)))}`)
         await new Promise(r => setTimeout(r, wait))
@@ -2760,39 +2956,46 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
     if (token !== osmLoadToken) return
     osmLoadingPct.value = 40
 
-    // Phase 2 = 40–100%: 4 outer quadrants (each = 15%)
+    // Phase 2 = 40–100%: 4 non-overlapping outer strips (north / south / west / east)
+    // Uses the same center-bbox bounds as fetchOSMData (cHalf=2 → 5×5 tiles) so that
+    // buildings in the center area are NOT fetched twice.
     const { south, west, north, east } = getMapBbox(lat, lng, z)
-    const midLat = (south + north) / 2
-    const midLng = (west + east) / 2
+    const cHalf2 = 2
+    const cTX2   = Math.floor(lonToTileX(lng, z))
+    const cTY2   = Math.floor(latToTileY(lat, z))
+    const cS2    = tileYToLat(cTY2 + cHalf2 + 1, z)  // south edge of center 5×5
+    const cN2    = tileYToLat(cTY2 - cHalf2,     z)  // north edge of center 5×5
+    const cW2    = tileXToLon(cTX2 - cHalf2,     z)  // west edge of center 5×5
+    const cE2    = tileXToLon(cTX2 + cHalf2 + 1, z)  // east edge of center 5×5
     const bldQ = (bb: string) =>
-      `[out:json][timeout:45][maxsize:134217728];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb}););(._;>;);out body;`
+      `[out:json][timeout:25][maxsize:67108864];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb}););(._;>;);out body;`
+    // Overpass bbox format: south,west,north,east
     const outerBboxes = [
-      { bb: `${midLat},${west},${north},${midLng}`,  label: "บน-ซ้าย" },
-      { bb: `${midLat},${midLng},${north},${east}`,  label: "บน-ขวา" },
-      { bb: `${south},${west},${midLat},${midLng}`,  label: "ล่าง-ซ้าย" },
-      { bb: `${south},${midLng},${midLat},${east}`,  label: "ล่าง-ขวา" },
+      { bb: `${cN2},${west},${north},${east}`,  label: "แถบเหนือ" },     // full-width north strip
+      { bb: `${south},${west},${cS2},${east}`,  label: "แถบใต้" },       // full-width south strip
+      { bb: `${cS2},${west},${cN2},${cW2}`,     label: "แถบตะวันตก" },  // west strip (center latitude band)
+      { bb: `${cS2},${cE2},${cN2},${east}`,     label: "แถบตะวันออก" }, // east strip (center latitude band)
     ]
+    // Phase 2: ยิงทุก strip พร้อมกัน, แต่ละ strip ยิง 2 mirrors parallel
     osmLoadingStep.value = "โหลดอาคารรอบนอก (4 ทิศพร้อมกัน)..."
-    await Promise.allSettled(outerBboxes.map(async ({ bb, label }, qi) => {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        if (token !== osmLoadToken) return
-        for (const mirror of [
-          'https://overpass-api.de/api/interpreter',
-          'https://overpass.kumi.systems/api/interpreter',
-        ]) {
-          try {
-            const res = await fetch(`${mirror}?data=${encodeURIComponent(bldQ(bb))}`, { signal: AbortSignal.timeout(28_000) })
-            if (!res.ok) continue
-            const d = await res.json()
-            if (d.elements?.length > 0 && token === osmLoadToken) {
-              await appendOSMBuildings(d.elements, lat, lng, z, token)
-            }
-            osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 15)
-            return
-          } catch { /* try next mirror */ }
-        }
-        if (attempt < 2) await new Promise(r => setTimeout(r, 2000))
-      }
+    const tryOuterMirror = (host: string, bb: string) =>
+      fetch(`${host}/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`,
+        { signal: AbortSignal.timeout(20_000) })
+        .then(r => { if (!r.ok) throw new Error(String(r.status)); return r })
+    await Promise.allSettled(outerBboxes.map(async ({ bb }, qi) => {
+      if (token !== osmLoadToken) return
+      try {
+        // ยิงทั้ง 2 mirrors พร้อมกัน — เอาตัวที่ตอบก่อน
+        const res = await Promise.any([
+          tryOuterMirror('https://overpass.kumi.systems', bb),
+          tryOuterMirror('https://overpass-api.de', bb),
+        ])
+        const d = await res.json()
+        if (d.elements?.length > 0 && token === osmLoadToken)
+          await appendOSMBuildings(d.elements, lat, lng, z, token)
+        if (token === osmLoadToken)
+          osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 15)
+      } catch { /* strip ล้มเหลวทั้ง 2 mirrors — ข้ามไป */ }
     }))
     if (token === osmLoadToken) {
       osmLoadingPct.value = 100
@@ -2801,7 +3004,7 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
     }
   } catch (err: any) {
     console.warn("OSM 3D load failed:", err?.message)
-    osmLoadingStep.value = "โหลดล้มเหลว"
+    if (token === osmLoadToken) osmLoadingStep.value = "โหลดล้มเหลว"
   } finally {
     if (token === osmLoadToken) {
       osmBuilding3dLoading.value = false

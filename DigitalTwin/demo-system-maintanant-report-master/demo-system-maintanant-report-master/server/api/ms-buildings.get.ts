@@ -10,6 +10,8 @@ const DATASET_LINKS_URL =
 
 type LinkEntry  = { qk: string; url: string }
 type BuildingRow = { lat: number; lng: number; geometry: string; area_m2: number }
+const MAX_MATCHED_MS_FILES = 24
+const MS_FETCH_CONCURRENCY = 4
 
 // ── simple in-process caches (survive across requests in the same process) ──
 const linksCache: { data: LinkEntry[] | null; expires: number } = { data: null, expires: 0 }
@@ -131,6 +133,24 @@ async function fetchBuildingsForUrl(url: string): Promise<BuildingRow[]> {
   }
 }
 
+async function fetchBuildingsWithConcurrency(urls: string[], concurrency = MS_FETCH_CONCURRENCY) {
+  const out: BuildingRow[] = []
+  if (!urls.length) return out
+
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, urls.length) }, async () => {
+    while (true) {
+      const idx = cursor++
+      if (idx >= urls.length) break
+      const rows = await fetchBuildingsForUrl(urls[idx])
+      out.push(...rows)
+    }
+  })
+
+  await Promise.allSettled(workers)
+  return out
+}
+
 export default defineEventHandler(async (event) => {
   const q     = getQuery(event)
   const south = parseFloat(q.south as string)
@@ -154,21 +174,36 @@ export default defineEventHandler(async (event) => {
       neededQks.add(toQuadKey(tx, ty, ZOOM))
 
   // Match against the index (prefix match in either direction)
-  const links      = await fetchLinks()
-  const matchedUrls = new Set<string>()
-  for (const { qk, url } of links)
-    for (const nqk of neededQks)
-      if (qk.startsWith(nqk) || nqk.startsWith(qk)) { matchedUrls.add(url); break }
+  const links = await fetchLinks()
+  const matchedEntries: LinkEntry[] = []
+  for (const entry of links) {
+    for (const nqk of neededQks) {
+      if (entry.qk.startsWith(nqk) || nqk.startsWith(entry.qk)) {
+        matchedEntries.push(entry)
+        break
+      }
+    }
+  }
 
-  if (!matchedUrls.size) return []
+  if (!matchedEntries.length) return []
 
-  // Download in parallel (capped at 4 simultaneous)
-  const urls   = [...matchedUrls].slice(0, 4)
-  const results = await Promise.allSettled(urls.map(fetchBuildingsForUrl))
+  // Keep the most specific quadkeys first. If a broader quadkey is fully covered
+  // by a more specific one in the match set, prefer the specific file to avoid
+  // downloading huge parent tiles that still miss local detail ordering.
+  matchedEntries.sort((a, b) => b.qk.length - a.qk.length)
+  const prunedEntries = matchedEntries.filter((entry, index, arr) => {
+    for (let i = 0; i < arr.length; i++) {
+      if (i === index) continue
+      const other = arr[i]
+      if (other.qk.length > entry.qk.length && other.qk.startsWith(entry.qk)) {
+        return false
+      }
+    }
+    return true
+  })
 
-  const all: BuildingRow[] = []
-  for (const r of results)
-    if (r.status === 'fulfilled') all.push(...r.value)
+  const urls = [...new Set(prunedEntries.map(x => x.url))].slice(0, MAX_MATCHED_MS_FILES)
+  const all = await fetchBuildingsWithConcurrency(urls)
 
   // Filter to bbox & deduplicate by centroid
   const seen    = new Set<string>()
@@ -180,5 +215,5 @@ export default defineEventHandler(async (event) => {
     return true
   })
 
-  return filtered.slice(0, 5000)
+  return filtered.slice(0, 12000)
 })
