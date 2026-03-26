@@ -332,7 +332,7 @@ const MAP_SURFACE_SIZE = 1100
 const MAP_TILE_SPAN = 11
 const PROJECT_ASSET_BUCKET = "digital-twin-project-files"
 const TERRAIN_SEG = 64                        // 64×64 subdivisions → 65×65 vertices
-const TERRAIN_ELEV_SCALE = 1.0                // 1.0 = proportional to building scale (wupm)
+const TERRAIN_ELEV_SCALE = 0.1
 const BUILDING_CURVE_SEGMENTS = 1
 const GROUND_CURVE_SEGMENTS = 2
 const BUILDING_YIELD_EVERY = 40
@@ -2248,11 +2248,11 @@ function applyMapSurfaceVertexColors(field: Float32Array | null) {
 }
 
 function getTerrainExaggeration(reliefM: number) {
-  if (reliefM >= 700) return 1.7
-  if (reliefM >= 350) return 1.48
-  if (reliefM >= 160) return 1.28
-  if (reliefM >= 70) return 1.14
-  return 1.02
+  if (reliefM >= 700) return 1.3
+  if (reliefM >= 350) return 1.2
+  if (reliefM >= 160) return 1.1
+  if (reliefM >= 70)  return 1.05
+  return 1.0
 }
 
 async function loadTerrain(lat: number, lng: number, z: number) {
@@ -2460,7 +2460,9 @@ function fetchOSMData(lat: number, lng: number, z: number) {
   const cBbox = `${cS},${cW},${cN},${cE}`
   const fullBbox = `${south},${west},${north},${east}`
 
-  const vegetationQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${fullBbox});node["natural"="tree_row"](${fullBbox});way["natural"="wood"](${fullBbox});relation["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});relation["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});relation["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});relation["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});relation["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});relation["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});relation["natural"="heath"](${fullBbox}););(._;>;);out body;`
+  // vegetation ใช้ cBbox (5×5 tiles) แทน fullBbox (11×11 tiles)
+  // fullBbox ขนาดใหญ่เกินไป → timeout บ่อย → ทำให้ Phase 1 ทั้งหมดพัง (รวมอาคาร)
+  const vegetationQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${cBbox});node["natural"="tree_row"](${cBbox});way["natural"="wood"](${cBbox});relation["natural"="wood"](${cBbox});way["landuse"="forest"](${cBbox});relation["landuse"="forest"](${cBbox});way["leisure"="park"](${cBbox});relation["leisure"="park"](${cBbox});way["natural"="scrub"](${cBbox});relation["natural"="scrub"](${cBbox});way["landuse"="orchard"](${cBbox});relation["landuse"="orchard"](${cBbox});way["natural"="grassland"](${cBbox});relation["natural"="grassland"](${cBbox});way["natural"="heath"](${cBbox});relation["natural"="heath"](${cBbox}););(._;>;);out body;`
   const buildingQuery = `[out:json][timeout:25][maxsize:67108864];(way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
 
   // Supabase: 4 quadrant parallel (ไม่มี rate limit)
@@ -2498,10 +2500,13 @@ function fetchOSMData(lat: number, lng: number, z: number) {
   ])
 
   if (buildingOsmResult.status !== "fulfilled") throw buildingOsmResult.reason
-  if (vegetationOsmResult.status !== "fulfilled") throw vegetationOsmResult.reason
+  // vegetation เป็น non-critical — ถ้า fail ให้ใช้ array ว่าง อาคารยังโหลดได้ปกติ
+  const vegetationElements = vegetationOsmResult.status === "fulfilled"
+    ? vegetationOsmResult.value.elements
+    : []
 
   const osmElements = new Map<string, any>()
-  for (const element of [...buildingOsmResult.value.elements, ...vegetationOsmResult.value.elements]) {
+  for (const element of [...buildingOsmResult.value.elements, ...vegetationElements]) {
     osmElements.set(`${element.type}:${element.id}`, element)
   }
   const osmData = { elements: [...osmElements.values()] }
@@ -3038,6 +3043,10 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
   if (!THREE || !scene || !elements.length) return
   const tileWidthM = (2 * Math.PI * 6371000 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, z)
   const worldUnitsPerMeter = (MAP_SURFACE_SIZE / MAP_TILE_SPAN) / tileWidthM
+  const WORLD_HALF = MAP_SURFACE_SIZE / 2
+  const treeBudget = getTreeRenderBudget(z)
+  const treeCells = new Set<string>()
+  const treeInstances: Array<{ x: number; z: number; y: number; trunkH: number; trunkR: number; crownR: number; crownStretch: number }> = []
 
   const nodeMap = new Map<number, { lat: number; lon: number }>()
   const wayMap = new Map<number, number[]>()
@@ -3046,17 +3055,63 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
     if (el.type === "way" && el.nodes) wayMap.set(el.id, el.nodes)
   }
 
+  function tryCollectTree(x: number, zPos: number, y0 = 0) {
+    if (treeInstances.length >= treeBudget.maxInstances) return false
+    const cell = `${Math.round(x / treeBudget.cellSize)},${Math.round(zPos / treeBudget.cellSize)}`
+    if (treeCells.has(cell)) return false
+    treeCells.add(cell)
+    treeInstances.push({
+      x, z: zPos, y: y0,
+      trunkH: 1.0 + Math.random() * 0.8,
+      trunkR: 0.10 + Math.random() * 0.06,
+      crownR: 0.7 + Math.random() * 0.6,
+      crownStretch: 0.78 + Math.random() * 0.34,
+    })
+    return true
+  }
+
+  function collectPts(nodeIds: number[]) {
+    const pts: { x: number; z: number }[] = []
+    for (const nid of nodeIds) {
+      const nd = nodeMap.get(nid)
+      if (!nd) continue
+      const wp = latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)
+      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF) pts.push(wp)
+    }
+    return pts
+  }
+
+  function scatterTrees(pts: { x: number; z: number }[], density: number) {
+    if (pts.length < 3) return
+    const minX = Math.min(...pts.map(p => p.x)), maxX = Math.max(...pts.map(p => p.x))
+    const minZ = Math.min(...pts.map(p => p.z)), maxZ = Math.max(...pts.map(p => p.z))
+    const count = Math.min(treeBudget.maxPerArea, Math.max(2, Math.floor((maxX - minX) * (maxZ - minZ) * density)))
+    for (let i = 0; i < count; i++) {
+      if (treeInstances.length >= treeBudget.maxInstances) break
+      let tx = 0, tz = 0, ok = false
+      for (let t = 0; t < 6; t++) {
+        tx = minX + Math.random() * (maxX - minX)
+        tz = minZ + Math.random() * (maxZ - minZ)
+        if (pointInPoly(tx, tz, pts)) { ok = true; break }
+      }
+      if (ok) tryCollectTree(tx, tz, getTerrainHeight(tx, tz))
+    }
+  }
+
   const wallGeos: any[] = []
   const roofGeos: any[] = []
+  const vegetationGeos: any[] = []
 
-  let buildingWork = 0
+  let work = 0
   for (const el of elements) {
     if (token !== osmLoadToken) return
-    buildingWork++
-    if (buildingWork % BUILDING_YIELD_EVERY === 0) {
+    work++
+    if (work % BUILDING_YIELD_EVERY === 0) {
       await yieldToBrowser()
       if (token !== osmLoadToken) return
     }
+
+    // --- อาคาร ---
     if (el.type === "way" && el.tags?.building && el.nodes?.length) {
       const pts: { x: number; z: number }[] = []
       for (const nid of el.nodes) {
@@ -3069,7 +3124,7 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
       const bt = el.tags?.building || "yes"
       const dh = (bt === "apartments" || bt === "commercial" || bt === "office") ? 14 : 8
       const h = Math.min((ht > 0 ? Math.min(ht, 200) : levels > 0 ? levels * 3.2 : dh) * worldUnitsPerMeter, 80)
-      const gy = pts.length ? getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) : 0
+      const gy = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length)
       pushBuildingGeometries(pts, gy, h, wallGeos, roofGeos)
     }
     if (el.type === "relation" && el.tags?.building && el.members?.length) {
@@ -3087,17 +3142,65 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
         pushBuildingGeometries(pts, gy, h, wallGeos, roofGeos)
       }
     }
+
+    // --- ต้นไม้ & พืชพรรณ (เหมือน Phase 1) ---
+    if (el.type === "node" && (el.tags?.natural === "tree" || el.tags?.natural === "tree_row")) {
+      const wp = latLngToWorld(el.lat, el.lon, centerLat, centerLng, z)
+      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF)
+        tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
+    }
+    const tags = el.tags || {}
+    const isForest  = tags.natural === "wood"   || tags.landuse === "forest"
+    const isPark    = tags.leisure === "park"
+    const isScrub   = tags.natural === "scrub"  || tags.natural === "heath"
+    const isOrchard = tags.landuse === "orchard"
+    const isGrass   = tags.natural === "grassland"
+    const isGreenArea = (el.type === "way" || el.type === "relation") &&
+      (isForest || isPark || isScrub || isOrchard || isGrass)
+    if (isGreenArea) {
+      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25) * treeBudget.densityScale
+      if (el.type === "way" && (el.nodes?.length ?? 0) >= 3) {
+        const pts = collectPts(el.nodes)
+        if (pts.length >= 3) {
+          const y = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) + 0.025
+          pushGroundOverlayGeometry(pts, y, vegetationGeos)
+          scatterTrees(pts, density)
+        }
+      }
+      if (el.type === "relation" && el.members?.length) {
+        for (const member of el.members) {
+          if (treeInstances.length >= treeBudget.maxInstances) break
+          if (member.type !== "way" || member.role !== "outer") continue
+          const nids = wayMap.get(member.ref)
+          if (!nids || nids.length < 3) continue
+          const pts = collectPts(nids)
+          if (pts.length >= 3) {
+            const y = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) + 0.025
+            pushGroundOverlayGeometry(pts, y, vegetationGeos)
+            scatterTrees(pts, density)
+          }
+        }
+      }
+    }
   }
 
-  if (!wallGeos.length || token !== osmLoadToken) return
+  if (token !== osmLoadToken) return
   await yieldToBrowser()
   if (token !== osmLoadToken) return
 
   const group = new THREE.Group()
-  addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xc8c0b8 }), group, true)
-  addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), group)
-  osmOuterBuildingGroups.push(group)
-  scene.add(group)
+  if (wallGeos.length) addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xc8c0b8 }), group, true)
+  if (roofGeos.length) addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), group)
+  if (vegetationGeos.length) addMergedGeos(
+    vegetationGeos,
+    new THREE.MeshLambertMaterial({ color: 0x7ea566, transparent: true, opacity: 0.28, depthWrite: false }),
+    group,
+  )
+  if (treeInstances.length) addTreeInstances(treeInstances, group)
+  if (group.children.length) {
+    osmOuterBuildingGroups.push(group)
+    scene.add(group)
+  }
 }
 
 async function loadOSMScene(lat: number, lng: number, z: number) {
@@ -3140,35 +3243,68 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
     const cN2    = tileYToLat(cTY2 - cHalf2,     z)  // north edge of center 5×5
     const cW2    = tileXToLon(cTX2 - cHalf2,     z)  // west edge of center 5×5
     const cE2    = tileXToLon(cTX2 + cHalf2 + 1, z)  // east edge of center 5×5
+    const midLng2 = (west + east) / 2
+    // เพิ่ม maxsize เป็น 128 MB เพื่อรองรับข้อมูลปริมาณมาก + รวม vegetation เพื่อให้ outer strips มีต้นไม้เหมือนกลาง
     const bldQ = (bb: string) =>
-      `[out:json][timeout:25][maxsize:67108864];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb}););(._;>;);out body;`
+      `[out:json][timeout:25][maxsize:134217728];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb});node["natural"="tree"](${bb});node["natural"="tree_row"](${bb});way["natural"="wood"](${bb});relation["natural"="wood"](${bb});way["landuse"="forest"](${bb});relation["landuse"="forest"](${bb});way["leisure"="park"](${bb});relation["leisure"="park"](${bb});way["natural"="scrub"](${bb});relation["natural"="scrub"](${bb});way["landuse"="orchard"](${bb});relation["landuse"="orchard"](${bb});way["natural"="grassland"](${bb});relation["natural"="grassland"](${bb});way["natural"="heath"](${bb});relation["natural"="heath"](${bb}););(._;>;);out body;`
+    // แยก North/South strip เป็น 2 ซีก (ตะวันตก+ออก) เพื่อลดขนาด query ต่อ request
+    // → 6 strips แทน 4: แต่ละ strip ≈ 16 tiles แทนที่จะเป็น 33 tiles (ป้องกัน maxsize ถูกตัด)
     // Overpass bbox format: south,west,north,east
     const outerBboxes = [
-      { bb: `${cN2},${west},${north},${east}`,  label: "แถบเหนือ" },     // full-width north strip
-      { bb: `${south},${west},${cS2},${east}`,  label: "แถบใต้" },       // full-width south strip
-      { bb: `${cS2},${west},${cN2},${cW2}`,     label: "แถบตะวันตก" },  // west strip (center latitude band)
-      { bb: `${cS2},${cE2},${cN2},${east}`,     label: "แถบตะวันออก" }, // east strip (center latitude band)
+      { bb: `${cN2},${west},${north},${midLng2}`,   label: "เหนือ-ตะวันตก" },
+      { bb: `${cN2},${midLng2},${north},${east}`,   label: "เหนือ-ตะวันออก" },
+      { bb: `${south},${west},${cS2},${midLng2}`,   label: "ใต้-ตะวันตก" },
+      { bb: `${south},${midLng2},${cS2},${east}`,   label: "ใต้-ตะวันออก" },
+      { bb: `${cS2},${west},${cN2},${cW2}`,         label: "แถบตะวันตก" },
+      { bb: `${cS2},${cE2},${cN2},${east}`,         label: "แถบตะวันออก" },
     ]
-    // Phase 2: ยิงทุก strip พร้อมกัน, แต่ละ strip ยิง 2 mirrors parallel
-    osmLoadingStep.value = "โหลดอาคารรอบนอก (4 ทิศพร้อมกัน)..."
-    const tryOuterMirror = (host: string, bb: string) =>
-      fetch(`${host}/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`,
-        { signal: AbortSignal.timeout(20_000) })
-        .then(r => { if (!r.ok) throw new Error(String(r.status)); return r })
-    await Promise.allSettled(outerBboxes.map(async ({ bb }, qi) => {
-      if (token !== osmLoadToken) return
+    // Phase 2: 6 strips พร้อมกัน — แต่ละ strip ใช้ sequential fallback (kumi → overpass-api.de)
+    // ไม่ใช้ Promise.any เพราะทำให้ยิง 12 requests พร้อมกัน → Overpass rate-limit ทุก strip
+    osmLoadingStep.value = "โหลดอาคารรอบนอก (6 โซนพร้อมกัน)..."
+    const fetchOuterStrip = async (bb: string): Promise<Response> => {
+      const url = (host: string) =>
+        `${host}/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`
+      // ลอง kumi ก่อน (Phase 1 ใช้ overpass-api.de → ไม่ชนกัน)
       try {
-        // ยิงทั้ง 2 mirrors พร้อมกัน — เอาตัวที่ตอบก่อน
-        const res = await Promise.any([
-          tryOuterMirror('https://overpass.kumi.systems', bb),
-          tryOuterMirror('https://overpass-api.de', bb),
-        ])
-        const d = await res.json()
-        if (d.elements?.length > 0 && token === osmLoadToken)
-          await appendOSMBuildings(d.elements, lat, lng, z, token)
-        if (token === osmLoadToken)
-          osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 15)
-      } catch { /* strip ล้มเหลวทั้ง 2 mirrors — ข้ามไป */ }
+        const r = await fetch(url('https://overpass.kumi.systems'), { signal: AbortSignal.timeout(12_000) })
+        if (!r.ok) throw new Error(String(r.status))
+        return r
+      } catch {
+        // fallback overpass-api.de ถ้า kumi ล้มเหลว
+        const r = await fetch(url('https://overpass-api.de'), { signal: AbortSignal.timeout(12_000) })
+        if (!r.ok) throw new Error(String(r.status))
+        return r
+      }
+    }
+    await Promise.allSettled(outerBboxes.map(async ({ bb, label }, qi) => {
+      // stagger 200ms ต่อ strip เพื่อไม่ให้ยิง 6 requests พร้อมกันทันที
+      await new Promise(r => setTimeout(r, qi * 200))
+      if (token !== osmLoadToken) return
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let fetchOk = false
+        let elements: any[] = []
+        try {
+          const res = await fetchOuterStrip(bb)
+          const d = await res.json()
+          elements = d.elements ?? []
+          fetchOk = true
+        } catch (err) {
+          console.warn(`[OSM outer] ${label} attempt ${attempt + 1} fetch failed:`, err)
+          if (attempt === 0) await new Promise(r => setTimeout(r, 2000))
+          continue
+        }
+        if (!fetchOk) continue
+        try {
+          if (elements.length > 0 && token === osmLoadToken)
+            await appendOSMBuildings(elements, lat, lng, z, token)
+          if (token === osmLoadToken)
+            osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 10)
+        } catch (err) {
+          console.warn(`[OSM outer] ${label} appendOSMBuildings failed:`, err)
+        }
+        return
+      }
+      console.warn(`[OSM outer] ${label} ล้มเหลวทุก attempt`)
     }))
     if (token === osmLoadToken) {
       osmLoadingPct.value = 100
