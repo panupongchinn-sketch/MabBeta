@@ -500,15 +500,18 @@ async function loadTrafficLayer() {
     if (needOsm) {
       const bbox = `${south},${west},${north},${east}`
       const osmQ = `[out:json][timeout:20];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified)$"](${bbox});(._;>;);out body;`
-      try {
-        const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQ)}`)
-        if (osmRes.ok) {
-          const osmData = await osmRes.json()
-          osmElements = osmData.elements ?? []
-          for (const el of osmElements)
-            if (el.type === 'node') nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
-        }
-      } catch { /* skip OSM if unavailable */ }
+      for (const mirror of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+        try {
+          const osmRes = await fetch(`${mirror}?data=${encodeURIComponent(osmQ)}`, { signal: AbortSignal.timeout(25_000) })
+          if (osmRes.ok) {
+            const osmData = await osmRes.json()
+            osmElements = osmData.elements ?? []
+            for (const el of osmElements)
+              if (el.type === 'node') nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+            break
+          }
+        } catch { /* try next mirror */ }
+      }
     }
     if (token !== trafficLoadToken) return
 
@@ -1009,9 +1012,14 @@ async function loadWaterLayer() {
       way["waterway"="dam"](${bbox});>;
       node["natural"="water"]["water"="reservoir"](${bbox});
     );out body;`
-    const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`)
-    if (!res.ok) throw new Error(`Overpass ${res.status}`)
-    const data = await res.json()
+    let data: any = null
+    for (const mirror of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+      try {
+        const res = await fetch(`${mirror}?data=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(25_000) })
+        if (res.ok) { data = await res.json(); break }
+      } catch { /* try next mirror */ }
+    }
+    if (!data) { console.warn('Water: Overpass unavailable'); data = { elements: [] } }
     if (token !== waterLoadToken) return
 
     // ── Fetch Thai dam API (parallel with OSM) ──
@@ -5784,6 +5792,26 @@ onBeforeUnmount(() => {
           <div :style="{ width: osmLoadingPct + '%', background: osmLoadingPct === 100 ? '#22c55e' : '#38bdf8', height: '100%', borderRadius: '4px', transition: 'width .4s ease' }"></div>
         </div>
         <div style="color:#94a3b8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ osmLoadingStep }}</div>
+      </div>
+    </Transition>
+
+    <!-- Traffic loading indicator -->
+    <Transition name="fade">
+      <div v-if="trafficLoading" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:601;min-width:260px;background:rgba(2,5,13,.88);backdrop-filter:blur(10px);border:1px solid rgba(34,197,94,.25);border-radius:14px;padding:10px 16px;color:#e2e8f0;font-size:12px;pointer-events:none">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span class="loading-dot" style="background:#22c55e"></span>
+          <span style="color:#22c55e;font-weight:600">กำลังโหลดข้อมูลจราจร...</span>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Water loading indicator -->
+    <Transition name="fade">
+      <div v-if="waterLoading" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:601;min-width:260px;background:rgba(2,5,13,.88);backdrop-filter:blur(10px);border:1px solid rgba(14,165,233,.25);border-radius:14px;padding:10px 16px;color:#e2e8f0;font-size:12px;pointer-events:none">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span class="loading-dot" style="background:#0ea5e9"></span>
+          <span style="color:#0ea5e9;font-weight:600">กำลังโหลดข้อมูลน้ำ...</span>
+        </div>
       </div>
     </Transition>
 
