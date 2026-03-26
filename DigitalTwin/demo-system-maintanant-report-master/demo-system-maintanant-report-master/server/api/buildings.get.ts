@@ -1,3 +1,6 @@
+const DEFAULT_SUPABASE_URL = 'https://ezaccpveuyilyfownpzs.supabase.co'
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_lu9mwNQ95NC6C2ajzQSSXg_pqzEIfMA'
+
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const south = parseFloat(q.south as string)
@@ -7,8 +10,8 @@ export default defineEventHandler(async (event) => {
   if ([south, west, north, east].some(isNaN)) throw createError({ statusCode: 400, message: 'south,west,north,east required' })
 
   const config = useRuntimeConfig()
-  const supabaseUrl = config.SUPABASE_URL || config.public.SUPABASE_URL
-  const supabaseKey = config.SUPABASE_SERVICE_ROLE_KEY || config.public.SUPABASE_KEY
+  const supabaseUrl = config.SUPABASE_URL || config.public.SUPABASE_URL || DEFAULT_SUPABASE_URL
+  const supabaseKey = config.SUPABASE_SERVICE_ROLE_KEY || config.public.SUPABASE_KEY || DEFAULT_SUPABASE_PUBLISHABLE_KEY
   if (!supabaseUrl || !supabaseKey) {
     throw createError({ statusCode: 500, message: 'Supabase env is missing' })
   }

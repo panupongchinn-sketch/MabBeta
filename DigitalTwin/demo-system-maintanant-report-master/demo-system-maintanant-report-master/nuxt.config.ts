@@ -1,5 +1,9 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import tailwindcss from "@tailwindcss/vite";
+
+const DEFAULT_SUPABASE_URL = "https://ezaccpveuyilyfownpzs.supabase.co"
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_lu9mwNQ95NC6C2ajzQSSXg_pqzEIfMA"
+
 export default defineNuxtConfig({
   compatibilityDate: "2025-07-15",
   devtools: { enabled: false },
@@ -33,7 +37,7 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
-    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_URL: process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     MEPBETA_TRAFFIC_API_URL: process.env.MEPBETA_TRAFFIC_API_URL,
@@ -46,8 +50,8 @@ export default defineNuxtConfig({
     MEPBETA_PULL_INTERVAL_MS: process.env.MEPBETA_PULL_INTERVAL_MS,
     MEPBETA_SCHEDULER_ENABLED: process.env.MEPBETA_SCHEDULER_ENABLED,
     public: {
-      SUPABASE_URL: process.env.SUPABASE_URL,
-      SUPABASE_KEY: process.env.SUPABASE_KEY,
+      SUPABASE_URL: process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL,
+      SUPABASE_KEY: process.env.SUPABASE_KEY || DEFAULT_SUPABASE_PUBLISHABLE_KEY,
     },
   },
 });
