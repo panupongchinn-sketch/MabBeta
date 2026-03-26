@@ -428,14 +428,14 @@ async function saveReport() {
 .ai-panel-enter-active { animation: aiSlideUp .28s cubic-bezier(.22,.61,.36,1); }
 .ai-panel-leave-active { animation: aiSlideUp .2s cubic-bezier(.22,.61,.36,1) reverse; }
 @keyframes aiSlideUp {
-  from { opacity: 0; transform: translateY(20px) scale(.96); }
+  from { opacity: 0; transform: translateY(-16px) scale(.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .ai-fab {
   position: fixed;
   right: 10px;
-  bottom: 80px;
+  top: 10px;
   z-index: 200;
   width: 108px;
   height: 54px;
@@ -475,7 +475,7 @@ async function saveReport() {
 .ai-panel-shell {
   position: fixed;
   right: 10px;
-  bottom: 80px;
+  top: 74px;
   z-index: 200;
   width: min(390px, calc(100vw - 18px));
   max-height: min(78vh, 620px);

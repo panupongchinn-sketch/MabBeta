@@ -338,6 +338,19 @@
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:16px;margin-bottom:24px">
+            <!-- Quick preset buttons -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.07em">เลือกระยะเวลา</label>
+              <div style="display:flex;gap:8px">
+                <button v-for="preset in genPresets" :key="preset.label"
+                  @click="applyGenPreset(preset)"
+                  :style="genModal.selectedPreset === preset.label
+                    ? 'flex:1;height:40px;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1.5px solid transparent;background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;box-shadow:0 4px 12px rgba(124,58,237,.3)'
+                    : 'flex:1;height:40px;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569'">
+                  {{ preset.label }}
+                </button>
+              </div>
+            </div>
             <div>
               <label style="display:block;font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.07em">วันหมดอายุ</label>
               <input v-model="genModal.expiresAt" type="date"
@@ -379,12 +392,27 @@
               <p style="margin:2px 0 0;font-size:12px;color:#94a3b8">{{ renewModal.user?.full_name }}</p>
             </div>
           </div>
-          <div style="margin-bottom:24px">
-            <label style="display:block;font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.07em">วันหมดอายุใหม่</label>
-            <input v-model="renewModal.newExpiry" type="date"
-              style="width:100%;height:44px;border:1.5px solid #e2e8f0;border-radius:10px;padding:0 14px;font-size:13px;outline:none;box-sizing:border-box;color:#0f172a;background:#fff;transition:all .2s"
-              @focus="($event.target as HTMLInputElement).style.borderColor='#16a34a';($event.target as HTMLInputElement).style.boxShadow='0 0 0 3px rgba(22,163,74,.1)'"
-              @blur="($event.target as HTMLInputElement).style.borderColor='#e2e8f0';($event.target as HTMLInputElement).style.boxShadow='none'"/>
+          <div style="display:flex;flex-direction:column;gap:16px;margin-bottom:24px">
+            <!-- Quick preset buttons -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.07em">เลือกระยะเวลา</label>
+              <div style="display:flex;gap:8px">
+                <button v-for="preset in genPresets" :key="preset.label"
+                  @click="applyRenewPreset(preset)"
+                  :style="renewModal.selectedPreset === preset.label
+                    ? 'flex:1;height:40px;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1.5px solid transparent;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;box-shadow:0 4px 12px rgba(34,197,94,.3)'
+                    : 'flex:1;height:40px;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569'">
+                  {{ preset.label }}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.07em">วันหมดอายุใหม่</label>
+              <input v-model="renewModal.newExpiry" type="date"
+                style="width:100%;height:44px;border:1.5px solid #e2e8f0;border-radius:10px;padding:0 14px;font-size:13px;outline:none;box-sizing:border-box;color:#0f172a;background:#fff;transition:all .2s"
+                @focus="($event.target as HTMLInputElement).style.borderColor='#16a34a';($event.target as HTMLInputElement).style.boxShadow='0 0 0 3px rgba(22,163,74,.1)'"
+                @blur="($event.target as HTMLInputElement).style.borderColor='#e2e8f0';($event.target as HTMLInputElement).style.boxShadow='none'"/>
+            </div>
           </div>
           <div style="display:flex;gap:10px">
             <button @click="renewModal.open=false" style="flex:1;height:44px;border-radius:10px;border:1.5px solid #e2e8f0;background:#fff;font-size:13px;font-weight:600;cursor:pointer;color:#475569;transition:all .15s"
@@ -460,8 +488,34 @@ const filters = [
   { key: 'noLicense', label: 'ไม่มี License' },
 ]
 
-const genModal   = ref({ open: false, user: null as any, expiresAt: '', note: '', loading: false })
-const renewModal = ref({ open: false, user: null as any, newExpiry: '', loading: false })
+const genModal   = ref({ open: false, user: null as any, expiresAt: '', note: '', loading: false, selectedPreset: '1 ปี' })
+const renewModal = ref({ open: false, user: null as any, newExpiry: '', loading: false, selectedPreset: '1 ปี' })
+
+const genPresets = [
+  { label: '7 วัน',  days: 7,   note: '7 วัน' },
+  { label: '30 วัน', days: 30,  note: '30 วัน' },
+  { label: '1 ปี',   days: 365, note: '1 ปี' },
+]
+
+const calcDateFromNow = (days: number) => {
+  const d = new Date(); d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+const applyGenPreset = (preset: { label: string; days: number; note: string }) => {
+  genModal.value.selectedPreset = preset.label
+  genModal.value.expiresAt = calcDateFromNow(preset.days)
+  genModal.value.note = preset.note
+}
+
+const applyRenewPreset = (preset: { label: string; days: number; note: string }) => {
+  renewModal.value.selectedPreset = preset.label
+  // ต่ออายุจากวันหมดอายุเดิม (ถ้ายังไม่หมด) หรือจากวันนี้
+  const base = renewModal.value.user?.license?.expires_at
+  const baseDate = base && new Date(base) > new Date() ? new Date(base) : new Date()
+  baseDate.setDate(baseDate.getDate() + preset.days)
+  renewModal.value.newExpiry = baseDate.toISOString().slice(0, 10)
+}
 
 const loadData = async () => {
   loading.value = true
@@ -522,8 +576,7 @@ const showToast = (msg: string, type: 'success' | 'error') => {
 }
 
 const openGenModal = (row: any) => {
-  const d = new Date(); d.setFullYear(d.getFullYear() + 1)
-  genModal.value = { open: true, user: row, expiresAt: d.toISOString().slice(0, 10), note: '1 ปี', loading: false }
+  genModal.value = { open: true, user: row, expiresAt: calcDateFromNow(365), note: '1 ปี', loading: false, selectedPreset: '1 ปี' }
 }
 const onGenLicense = async () => {
   genModal.value.loading = true
@@ -534,8 +587,10 @@ const onGenLicense = async () => {
 }
 
 const openRenewModal = (row: any) => {
-  const d = new Date(row.license?.expires_at || Date.now()); d.setFullYear(d.getFullYear() + 1)
-  renewModal.value = { open: true, user: row, newExpiry: d.toISOString().slice(0, 10), loading: false }
+  const base = row.license?.expires_at
+  const baseDate = base && new Date(base) > new Date() ? new Date(base) : new Date()
+  baseDate.setDate(baseDate.getDate() + 365)
+  renewModal.value = { open: true, user: row, newExpiry: baseDate.toISOString().slice(0, 10), loading: false, selectedPreset: '1 ปี' }
 }
 const onRenew = async () => {
   renewModal.value.loading = true

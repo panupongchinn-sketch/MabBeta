@@ -158,6 +158,20 @@ export const useCustomAuth = () => {
       return { error: { message: 'ไม่พบ License Key นี้ กรุณาตรวจสอบอีกครั้ง' } }
     }
 
+    // ถ้า license ถูก admin assign ให้ user คนนี้แล้ว → activate session ได้เลย
+    if (license.is_used && license.used_by === user.value.id) {
+      if (license.expires_at && new Date(license.expires_at) < new Date()) {
+        return { error: { message: 'License Key นี้หมดอายุแล้ว' } }
+      }
+      await $supabase
+        .from('app_users')
+        .update({ is_active: true, license_key_id: license.id })
+        .eq('id', user.value.id)
+      user.value = { ...user.value, is_active: true, license_key_id: license.id }
+      localStorage.setItem(SESSION_KEY, JSON.stringify(user.value))
+      return { error: null }
+    }
+
     if (license.is_used) {
       return { error: { message: 'License Key นี้ถูกใช้งานไปแล้ว' } }
     }

@@ -49,6 +49,8 @@ const projectDeleteError = ref("")
 const projectDeleteSuccess = ref("")
 const userLicenseNote = ref<string | null>(null)
 const isDemoUser = computed(() => userLicenseNote.value?.toUpperCase().includes('DEMO') ?? false)
+const is7DayUser = computed(() => userLicenseNote.value?.includes('7 วัน') ?? false)
+const isLimitedUser = computed(() => isDemoUser.value || is7DayUser.value)
 const panelMapOpen = ref(true)
 const panelModelOpen = ref(false)
 const panelStatusOpen = ref(false)
@@ -82,6 +84,8 @@ const cctvDragOver = ref(false)
 const cctvActiveFeed = ref<{ markerId: number; cameraId: number } | null>(null)
 let cctvIdSeed = 1
 let cctvMarkerIdSeed = 1
+const compassAngle = ref(0)
+const tourRef = ref<any>(null)
 
 function updateCctvMarkerPositions() {
   if (!camera || !renderer || !THREE || !cctvMarkers.value.length) {
@@ -248,10 +252,10 @@ function exitWalkMode() {
   if (!camera || !controls) return
   if (walkSavedCamPos) camera.position.set(...walkSavedCamPos)
   if (walkSavedTarget) controls.target.set(...walkSavedTarget)
-  controls.minDistance = 1
-  controls.maxDistance = 400
-  controls.minPolarAngle = Math.PI * 0.2
-  controls.maxPolarAngle = Math.PI * 0.48
+  controls.minDistance = 0.1
+  controls.maxDistance = 50000
+  controls.minPolarAngle = 0
+  controls.maxPolarAngle = Math.PI / 2 - 0.01
   controls.dampingFactor = 0.06
   walkMode.value = false
   walkKeys = {}
@@ -324,15 +328,33 @@ function updateWalkMovement() {
 let modelRadius = 1
 let modelCenter: any = null
 let lastWallSig = ""
-const MAP_SURFACE_SIZE = 500
-const MAP_TILE_SPAN = 5
+const MAP_SURFACE_SIZE = 1100
+const MAP_TILE_SPAN = 11
 const PROJECT_ASSET_BUCKET = "digital-twin-project-files"
+const TERRAIN_SEG = 64                        // 64×64 subdivisions → 65×65 vertices
+const TERRAIN_ELEV_SCALE = 1.0                // 1.0 = proportional to building scale (wupm)
 const objectUrlPool: string[] = []
 let osmBuildingGroup: any = null
+let osmOuterBuildingGroups: any[] = []
 let osmTreeGroup: any = null
 let osmLoadToken = 0
-const osmDataCache = new Map<string, any>()  // cache by "lat,lng,z"
+// terrain heightfield (in world units), indexed [iy*(TERRAIN_SEG+1)+ix]
+let terrainField: Float32Array | null = null
+let terrainWorldUnitsPerMeter = 0
+interface BuildingsMlRow {
+  lat: number
+  lng: number
+  geometry: string
+  area_m2?: number | null
+}
+interface OSMSceneData {
+  osm: any
+  buildings: BuildingsMlRow[]
+}
+const osmDataCache = new Map<string, OSMSceneData>()  // cache by "tileX,tileY,z"
 const osmBuilding3dLoading = ref(false)
+const osmLoadingPct = ref(0)
+const osmLoadingStep = ref("")
 let trafficGroup: any = null
 let trafficLoadToken = 0
 let trafficRefreshTimer: any = null
@@ -353,12 +375,55 @@ interface ThaiDamRec {
   inflowMCM?: number; releasedMCM?: number; province?: string
 }
 const panelWaterOpen = ref(false)
+const showWaterSupplyPanel = ref(false)
 const waterVisible   = ref(false)
 const waterLoading   = ref(false)
 const waterLastUpdate = ref("")
 const waterSources   = ref<WaterSource[]>([])
 const waterScreenPos = ref<{ id: number; x: number; y: number; visible: boolean; source: WaterSource }[]>([])
 const selectedWater  = ref<WaterSource | null>(null)
+
+// ── Water Pipe Layer (ผังประปา) ──────────────────────────────────
+const panelWaterPipeOpen = ref(false)
+const waterPipeVisible   = ref(false)
+const waterPipeLoading   = ref(false)
+let waterPipeGroup: any = null
+let waterPipeLoadToken = 0
+interface WPNode { id: string; name: string; type: string; status: string; worldX: number; worldZ: number }
+interface WPSeg  { id: string; label: string; status: string; midX: number; midZ: number }
+const waterPipeNodes    = ref<WPNode[]>([])
+const waterPipeSegs     = ref<WPSeg[]>([])
+const wpNodeScreenPos   = ref<{ id: string; x: number; y: number; visible: boolean; node: WPNode }[]>([])
+const wpSegScreenPos    = ref<{ id: string; x: number; y: number; visible: boolean; seg: WPSeg }[]>([])
+const selectedWPNode    = ref<WPNode | null>(null)
+
+// ── Water Pipe Drawing Tool ───────────────────────────────────────
+const wpToolOpen    = ref(false)
+const wpToolMode    = ref<'pipe'|'valve'|'hydrant'|'meter'>('pipe')
+const wpToolDiam    = ref(150)
+const wpToolMat     = ref<'pvc'|'ductile_iron'|'hdpe'|'steel'>('pvc')
+const wpToolStatus  = ref<'normal'|'leaking'|'blocked'>('normal')
+let   wpDrawing     = false
+const wpDrawPoints: any[] = []
+let   wpPreviewLine: any  = null
+let   wpUserGroup:  any   = null
+let   wpUserIdSeed  = 0
+interface WPUserPipe { id:string; pts:{x:number;z:number}[]; diam:number; mat:string; status:string; label:string; midX:number; midZ:number }
+interface WPUserNode { id:string; type:'valve'|'hydrant'|'meter'; x:number; z:number }
+const wpUserPipes = ref<WPUserPipe[]>([])
+const wpUserNodes = ref<WPUserNode[]>([])
+const wpUserPipeScreen = ref<{id:string;x:number;y:number;visible:boolean;pipe:WPUserPipe}[]>([])
+const wpUserNodeScreen = ref<{id:string;x:number;y:number;visible:boolean;node:WPUserNode}[]>([])
+
+// ── อบต. Boundary Layer ──────────────────────────────────────────
+const tambonVisible = ref(false)
+const tambonLoading = ref(false)
+const tambonError = ref("")
+let tambonGroup: any = null
+let tambonLoadToken = 0
+interface TambonArea { id: number; name: string; midX: number; midZ: number }
+const tambonAreas = ref<TambonArea[]>([])
+const tambonLabelPos = ref<{ id: number; x: number; y: number; visible: boolean; name: string }[]>([])
 
 const panelTrafficOpen = ref(false)
 const trafficVisible = ref(false)
@@ -381,17 +446,25 @@ const pm25DailyData  = ref<{ date: string; aqi: number; maxT: number; minT: numb
 const pm25Pollutants = ref<{ pm25: number; o3: number; no2: number; so2: number; co: number } | null>(null)
 const pm25LocationName = ref("")
 
-// seeded random for consistent traffic per road id
-function seededRand(seed: number) {
-  const x = Math.sin(seed + 1) * 43758.5453123
-  return x - Math.floor(x)
+// Traffic level → 3D color config (shared by HERE & Waze)
+// level 0 = ไหลดี, 1-2 = เริ่มติด, 3-4 = ติดหนัก, 5 = หยุดนิ่ง
+// jamFactor (HERE 0-10) → level: 0-1=0, 2-3=1, 4-5=2, 6-7=3, 8-9=4, 10=5
+function jamFactorToLevel(jf: number): number {
+  if (jf < 2)  return 0
+  if (jf < 4)  return 1
+  if (jf < 6)  return 2
+  if (jf < 8)  return 3
+  if (jf < 10) return 4
+  return 5
 }
-function trafficLevel(wayId: number): 0 | 1 | 2 {
-  const r = seededRand(wayId + Math.floor(Date.now() / TRAFFIC_REFRESH_MS))
-  if (r < 0.55) return 0   // free  – green
-  if (r < 0.82) return 1   // slow  – yellow
-  return 2                  // jam   – red
-}
+const WAZE_LEVEL_CFG = [
+  { color: 0x166534, emissive: 0x16a34a, glow: 0x16a34a, w: 0.60, opacity: 0.92 }, // 0 free
+  { color: 0x3b6b00, emissive: 0x65a30d, glow: 0x84cc16, w: 0.65, opacity: 0.92 }, // 1 light
+  { color: 0x854d0e, emissive: 0xca8a04, glow: 0xfbbf24, w: 0.70, opacity: 0.94 }, // 2 moderate
+  { color: 0x9a3412, emissive: 0xea580c, glow: 0xfb923c, w: 0.75, opacity: 0.96 }, // 3 heavy
+  { color: 0x7f1d1d, emissive: 0xdc2626, glow: 0xf87171, w: 0.80, opacity: 0.97 }, // 4 very heavy
+  { color: 0x450a0a, emissive: 0xb91c1c, glow: 0xef4444, w: 0.82, opacity: 0.99 }, // 5 standstill
+]
 
 async function loadTrafficLayer() {
   if (!scene || !THREE || !mapSurfaceMesh) return
@@ -399,98 +472,134 @@ async function loadTrafficLayer() {
   ++trafficLoadToken
   const token = trafficLoadToken
   try {
-    const z = Math.max(14, Math.min(19, Math.round(mapZoom.value)))
+    const z    = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
     const half = MAP_TILE_SPAN / 2
-    const cx = lonToTileX(mapLng.value, z)
-    const cy = latToTileY(mapLat.value, z)
+    const cx   = lonToTileX(mapLng.value, z)
+    const cy   = latToTileY(mapLat.value, z)
     const south = tileYToLat(cy + half, z)
     const north = tileYToLat(cy - half, z)
     const west  = tileXToLon(cx - half, z)
     const east  = tileXToLon(cx + half, z)
-    const bbox  = `${south},${west},${north},${east}`
-    const query = `[out:json][timeout:20];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified)$"](${bbox});(._;>;);out body;`
-    const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`)
-    if (!res.ok) throw new Error(`Overpass ${res.status}`)
-    const data = await res.json()
+
+    // ── 1. Fetch traffic segments from server proxy (HERE → Waze fallback) ──
+    const res = await fetch(`/api/traffic-flow?north=${north}&south=${south}&east=${east}&west=${west}`)
+    if (token !== trafficLoadToken) return
+    const trafficData = res.ok ? await res.json() : { source: 'none', segments: [] }
+    const segments: {
+      points: { lat: number; lng: number }[]
+      jamFactor: number
+      speedKMH: number
+      freeFlowKMH: number
+    }[] = trafficData.segments ?? []
+
+    // ── 2. Waze returns only jammed roads → still need OSM for green roads base
+    const needOsm = true
+    let osmElements: any[] = []
+    let nodeMap = new Map<number, { lat: number; lon: number }>()
+
+    if (needOsm) {
+      const bbox = `${south},${west},${north},${east}`
+      const osmQ = `[out:json][timeout:20];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified)$"](${bbox});(._;>;);out body;`
+      try {
+        const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQ)}`)
+        if (osmRes.ok) {
+          const osmData = await osmRes.json()
+          osmElements = osmData.elements ?? []
+          for (const el of osmElements)
+            if (el.type === 'node') nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+        }
+      } catch { /* skip OSM if unavailable */ }
+    }
     if (token !== trafficLoadToken) return
 
-    // build node map
-    const nodeMap = new Map<number, { lat: number; lon: number }>()
-    for (const el of data.elements) {
-      if (el.type === 'node') nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+    // ── 3. Build jam spatial grid for OSM road colouring ──────────────────
+    // jamFactor 0–10 → level index 0–5
+    const jamGrid = new Map<string, number>()
+    for (const seg of segments) {
+      const lvl = jamFactorToLevel(seg.jamFactor)
+      if (lvl === 0) continue  // free flow — don't need to mark grid
+      for (let i = 0; i < seg.points.length - 1; i++) {
+        const mlat = ((seg.points[i].lat + seg.points[i + 1].lat) / 2).toFixed(4)
+        const mlng = ((seg.points[i].lng + seg.points[i + 1].lng) / 2).toFixed(4)
+        const key  = `${mlat},${mlng}`
+        if (!jamGrid.has(key) || jamGrid.get(key)! < lvl) jamGrid.set(key, lvl)
+      }
     }
 
+    // ── 4. Build Three.js scene ────────────────────────────────────────────
     clearTrafficLayer()
     trafficGroup = new THREE.Group()
     scene.add(trafficGroup)
 
-    const Y        = 0.12
-    const ROAD_W   = [0.70, 0.75, 0.82]   // wider for visibility
-    const ROAD_H   = 0.07
-    // Deep neon: dark green / dark red / dark yellow
-    const COLORS   = [0x166534, 0x7f1d1d, 0x713f12]
-    const EMISSIVE = [0x16a34a, 0xdc2626, 0xca8a04]
-    const OPACITY  = [0.97, 0.97, 0.97]
-    const EMISS_I  = [2.8, 2.8, 2.8]
+    const mats = WAZE_LEVEL_CFG.map(c => new THREE.MeshStandardMaterial({
+      color: c.color, emissive: c.emissive, emissiveIntensity: 2.6,
+      roughness: 0, metalness: 0, transparent: true, opacity: c.opacity, depthWrite: false,
+    }))
+    const glowMats = WAZE_LEVEL_CFG.map(c => new THREE.MeshStandardMaterial({
+      color: c.glow, emissive: c.glow, emissiveIntensity: 1.8,
+      transparent: true, opacity: 0.18, roughness: 0, metalness: 0, depthWrite: false,
+    }))
 
-    // pre-build one material per level (reuse)
-    const mats = COLORS.map((col, i) => new THREE.MeshStandardMaterial({
-      color:             col,
-      emissive:          EMISSIVE[i],
-      emissiveIntensity: EMISS_I[i],
-      roughness: 0.0, metalness: 0.0,
-      transparent: true, opacity: OPACITY[i],
-      depthWrite: false,
-    }))
-    // wide outer glow halo — 2.5× main road, very soft
-    const GLOW_COLS = [0x16a34a, 0xdc2626, 0xca8a04]
-    const glowMats = GLOW_COLS.map((col, i) => new THREE.MeshStandardMaterial({
-      color:             col,
-      emissive:          col,
-      emissiveIntensity: 2.0,
-      transparent: true, opacity: 0.22 + i * 0.06,
-      roughness: 0.0, metalness: 0.0,
-      depthWrite: false,
-    }))
+    const Y = 0.12, ROAD_H = 0.07
+
+    function addRoadSeg(pts: any[], level: number) {
+      const cfg = WAZE_LEVEL_CFG[level]
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1]
+        const segLen = a.distanceTo(b)
+        if (segLen < 0.01) continue
+        const mid   = a.clone().add(b).multiplyScalar(0.5)
+        const angle = Math.atan2(b.x - a.x, b.z - a.z)
+        const seg = new THREE.Mesh(new THREE.BoxGeometry(cfg.w, ROAD_H, segLen), mats[level])
+        seg.position.copy(mid); seg.rotation.y = angle
+        trafficGroup.add(seg)
+        const glow = new THREE.Mesh(new THREE.BoxGeometry(cfg.w * 3, ROAD_H * 0.3, segLen), glowMats[level])
+        glow.position.copy(mid); glow.position.y -= 0.01; glow.rotation.y = angle
+        trafficGroup.add(glow)
+      }
+    }
 
     let free = 0, slow = 0, jam = 0
 
-    for (const el of data.elements) {
+    // Pass A: OSM roads coloured by nearest Waze jam cell
+    for (const el of osmElements) {
       if (el.type !== 'way' || !el.nodes) continue
-      const level = trafficLevel(el.id)
-      if (level === 0) free++; else if (level === 1) slow++; else jam++
-
       const pts: any[] = []
       for (const nid of el.nodes) {
-        const nd = nodeMap.get(nid)
-        if (!nd) continue
+        const nd = nodeMap.get(nid); if (!nd) continue
         const wp = latLngToWorld(nd.lat, nd.lon, mapLat.value, mapLng.value, z)
         pts.push(new THREE.Vector3(wp.x, Y, wp.z))
       }
       if (pts.length < 2) continue
 
-      for (let i = 0; i < pts.length - 1; i++) {
-        const a = pts[i] as any
-        const b = pts[i + 1] as any
-        const segLen = a.distanceTo(b)
-        if (segLen < 0.01) continue
-        const mid = a.clone().add(b).multiplyScalar(0.5)
-        const angle = Math.atan2(b.x - a.x, b.z - a.z)
-
-        // main road stripe
-        const w = ROAD_W[level]
-        const seg = new THREE.Mesh(new THREE.BoxGeometry(w, ROAD_H, segLen), mats[level])
-        seg.position.copy(mid)
-        seg.rotation.y = angle
-        trafficGroup.add(seg)
-
-        // outer glow halo (3× wider, very flat — neon bloom effect)
-        const glow = new THREE.Mesh(new THREE.BoxGeometry(w * 3.0, ROAD_H * 0.3, segLen), glowMats[level])
-        glow.position.copy(mid)
-        glow.position.y -= 0.01
-        glow.rotation.y = angle
-        trafficGroup.add(glow)
+      let worstLevel = 0
+      for (let i = 0; i < el.nodes.length - 1; i++) {
+        const nd1 = nodeMap.get(el.nodes[i])
+        const nd2 = nodeMap.get(el.nodes[i + 1])
+        if (!nd1 || !nd2) continue
+        const mlat = ((nd1.lat + nd2.lat) / 2).toFixed(4)
+        const mlng = ((nd1.lon + nd2.lon) / 2).toFixed(4)
+        for (let dlat = -1; dlat <= 1; dlat++) {
+          for (let dlng = -1; dlng <= 1; dlng++) {
+            const k = `${(parseFloat(mlat) + dlat * 0.0001).toFixed(4)},${(parseFloat(mlng) + dlng * 0.0001).toFixed(4)}`
+            const lvl = jamGrid.get(k)
+            if (lvl !== undefined && lvl > worstLevel) worstLevel = lvl
+          }
+        }
       }
+      if (worstLevel === 0) free++; else if (worstLevel <= 2) slow++; else jam++
+      addRoadSeg(pts, worstLevel)
+    }
+
+    // Pass B: Waze jam polylines overlay (fill gaps not in OSM)
+    for (const seg of segments) {
+      const lvl = jamFactorToLevel(seg.jamFactor)
+      if (lvl === 0) continue
+      const pts = seg.points.map((p: any) => {
+        const wp = latLngToWorld(p.lat, p.lng, mapLat.value, mapLng.value, z)
+        return new THREE.Vector3(wp.x, Y + 0.02, wp.z)
+      })
+      if (pts.length >= 2) addRoadSeg(pts, lvl)
     }
 
     trafficStats.value = { free, slow, jam }
@@ -881,7 +990,7 @@ async function loadWaterLayer() {
   ++waterLoadToken
   const token = waterLoadToken
   try {
-    const z    = Math.max(14, Math.min(19, Math.round(mapZoom.value)))
+    const z    = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
     const half = Math.floor(MAP_TILE_SPAN / 2)
     const tX   = Math.floor(lonToTileX(mapLng.value, z))
     const tY   = Math.floor(latToTileY(mapLat.value, z))
@@ -1048,6 +1157,463 @@ function toggleWaterLayer() {
   if (waterVisible.value) loadWaterLayer()
   else clearWaterLayer()
 }
+
+// ── Water Pipe Layer ─────────────────────────────────────────────
+function clearWaterPipeLayer() {
+  if (waterPipeGroup) { scene?.remove(waterPipeGroup); waterPipeGroup = null }
+  waterPipeNodes.value = []
+  waterPipeSegs.value  = []
+  wpNodeScreenPos.value = []
+  wpSegScreenPos.value  = []
+  selectedWPNode.value  = null
+}
+
+async function loadWaterPipeLayer() {
+  if (!scene || !THREE || !mapSurfaceMesh) return
+  waterPipeLoading.value = true
+  ++waterPipeLoadToken
+  const token = waterPipeLoadToken
+  try {
+    const data = await $fetch<any>('/api/water-supply')
+    if (token !== waterPipeLoadToken) return
+    clearWaterPipeLayer()
+    const z = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
+    waterPipeGroup = new THREE.Group()
+    scene.add(waterPipeGroup)
+
+    // ── Shared materials ──
+    const matWhite = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+    const matBlue  = new THREE.MeshBasicMaterial({ color: 0x1a55cc })
+
+    // ── Helper: วาด + (cross) marker ──
+    function addCrossMarker(x: number, z: number, color: number, size = 0.5) {
+      const mat = new THREE.MeshBasicMaterial({ color })
+      const h = new THREE.Mesh(new THREE.BoxGeometry(size, 0.07, size * 0.28), mat)
+      h.position.set(x, 0.22, z)
+      const v = new THREE.Mesh(new THREE.BoxGeometry(size * 0.28, 0.07, size), mat)
+      v.position.set(x, 0.22, z)
+      // outer ring
+      const ring = new THREE.Mesh(
+        Object.assign(new THREE.RingGeometry(size * 0.52, size * 0.62, 20), { }).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+      )
+      ring.position.set(x, 0.23, z)
+      waterPipeGroup.add(h, v, ring)
+    }
+
+    // ── Helper: วาด X (valve) marker ──
+    function addValveMarker(x: number, z: number, color: number, size = 0.45) {
+      const mat = new THREE.MeshBasicMaterial({ color })
+      const b1 = new THREE.Mesh(new THREE.BoxGeometry(size, 0.07, size * 0.25), mat)
+      b1.position.set(x, 0.22, z); b1.rotation.y = Math.PI / 4
+      const b2 = new THREE.Mesh(new THREE.BoxGeometry(size, 0.07, size * 0.25), mat)
+      b2.position.set(x, 0.22, z); b2.rotation.y = -Math.PI / 4
+      const ring = new THREE.Mesh(
+        Object.assign(new THREE.RingGeometry(size * 0.52, size * 0.65, 20), {}).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+      )
+      ring.position.set(x, 0.23, z)
+      waterPipeGroup.add(b1, b2, ring)
+    }
+
+    // ── Helper: M marker (meter disc) ──
+    function addMMarker(x: number, z: number) {
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.025, 12), matBlue.clone())
+      disc.position.set(x, 0.1, z)
+      const ring = new THREE.Mesh(
+        Object.assign(new THREE.RingGeometry(0.10, 0.145, 12), {}).rotateX(-Math.PI / 2),
+        matWhite.clone()
+      )
+      ring.position.set(x, 0.12, z)
+      waterPipeGroup.add(disc, ring)
+    }
+
+    // ── Build node map & draw node markers ──
+    const nodeMap = new Map<string, WPNode>()
+    const nodes: WPNode[] = []
+    for (const n of data.nodes) {
+      const wp = latLngToWorld(n.lat, n.lng, mapLat.value, mapLng.value, z)
+      const wn: WPNode = { id: n.id, name: n.name, type: n.type, status: n.status, worldX: wp.x, worldZ: wp.z }
+      nodeMap.set(n.id, wn)
+      nodes.push(wn)
+      const color = n.status === 'critical' ? 0xe05050 : n.status === 'warning' ? 0xe0a030 : 0xee3333
+      if (['source', 'treatment', 'storage'].includes(n.type)) {
+        addCrossMarker(wp.x, wp.z, color, 0.52)
+      } else {
+        addValveMarker(wp.x, wp.z, n.status === 'critical' ? 0xe05050 : 0xe0a030, 0.46)
+      }
+    }
+    waterPipeNodes.value = nodes
+
+    // ── Draw pipes as tubes + M markers ──
+    const segs: WPSeg[] = []
+    for (const p of data.pipes) {
+      const fn = nodeMap.get(p.from)
+      const tn = nodeMap.get(p.to)
+      if (!fn || !tn) continue
+
+      const pipeColor = p.status === 'leaking' ? 0xe0a030 : p.status === 'blocked' ? 0xe05050 : 0x00ccff
+      const radius = Math.max(0.05, Math.min(0.14, p.diameter_mm / 4200))
+
+      // Tube (หนา)
+      const start = new THREE.Vector3(fn.worldX, 0.04, fn.worldZ)
+      const end   = new THREE.Vector3(tn.worldX, 0.04, tn.worldZ)
+      const curve = new THREE.LineCurve3(start, end)
+      const tubeGeo = new THREE.TubeGeometry(curve, 1, radius, 7, false)
+      waterPipeGroup.add(new THREE.Mesh(tubeGeo, new THREE.MeshBasicMaterial({ color: pipeColor })))
+
+      // M markers กระจายตลอดท่อ
+      const segLen = start.distanceTo(end)
+      const spacing = 0.65
+      const mCount  = Math.max(1, Math.floor(segLen / spacing))
+      for (let i = 1; i < mCount; i++) {
+        const t = i / mCount
+        addMMarker(fn.worldX + (tn.worldX - fn.worldX) * t, fn.worldZ + (tn.worldZ - fn.worldZ) * t)
+      }
+
+      // Label midpoint
+      const diamIn = p.diameter_mm >= 25 ? Math.round(p.diameter_mm / 25.4) + '"' : p.diameter_mm + 'mm'
+      const mat_s  = ({ pvc: 'CAS', ductile_iron: 'DIP', steel: 'STL', hdpe: 'HDPE' } as any)[p.material] ?? p.material.toUpperCase()
+      segs.push({ id: p.id, label: `${diamIn} ${mat_s}`, status: p.status, midX: (fn.worldX + tn.worldX) / 2, midZ: (fn.worldZ + tn.worldZ) / 2 })
+    }
+    waterPipeSegs.value = segs
+  } catch (e) {
+    console.warn('Water pipe layer failed:', e)
+  } finally {
+    if (token === waterPipeLoadToken) waterPipeLoading.value = false
+  }
+}
+
+function updateWaterPipeScreenPos() {
+  if (!camera || !renderer || !THREE || (!waterPipeNodes.value.length && !waterPipeSegs.value.length)) {
+    if (wpNodeScreenPos.value.length) wpNodeScreenPos.value = []
+    if (wpSegScreenPos.value.length)  wpSegScreenPos.value  = []
+    return
+  }
+  const rect = renderer.domElement.getBoundingClientRect()
+  const toScreen = (wx: number, wz: number, wy = 0.25) => {
+    const v = new THREE.Vector3(wx, wy, wz)
+    v.project(camera)
+    return { x: (v.x * 0.5 + 0.5) * rect.width + rect.left, y: (-v.y * 0.5 + 0.5) * rect.height + rect.top, visible: v.z < 1 }
+  }
+  wpNodeScreenPos.value = waterPipeNodes.value.map(n => ({ id: n.id, node: n, ...toScreen(n.worldX, n.worldZ, 0.35) }))
+  wpSegScreenPos.value  = waterPipeSegs.value.map(s  => ({ id: s.id, seg: s,  ...toScreen(s.midX, s.midZ, 0.1) }))
+}
+
+function toggleWaterPipeLayer() {
+  waterPipeVisible.value = !waterPipeVisible.value
+  if (waterPipeVisible.value) loadWaterPipeLayer()
+  else clearWaterPipeLayer()
+}
+
+// ── Water Pipe Drawing Tool functions ────────────────────────────
+function ensureWPUserGroup() {
+  if (!scene || !THREE) return
+  if (!wpUserGroup) { wpUserGroup = new THREE.Group(); scene.add(wpUserGroup) }
+}
+
+function wpPipeColor() {
+  return wpToolStatus.value === 'leaking' ? 0xe0a030 : wpToolStatus.value === 'blocked' ? 0xe05050 : 0x00ccff
+}
+
+function wpDrawUserPipe(pts: {x:number;z:number}[]) {
+  if (!THREE || !wpUserGroup || pts.length < 2) return
+  const color  = wpPipeColor()
+  const radius = Math.max(0.05, Math.min(0.14, wpToolDiam.value / 4200))
+  const start  = new THREE.Vector3(pts[0].x, 0.04, pts[0].z)
+  const end    = new THREE.Vector3(pts[pts.length-1].x, 0.04, pts[pts.length-1].z)
+  const curve  = new THREE.LineCurve3(start, end)
+  wpUserGroup.add(new THREE.Mesh(new THREE.TubeGeometry(curve,1,radius,7,false), new THREE.MeshBasicMaterial({ color })))
+  // M markers
+  const segLen  = start.distanceTo(end)
+  const mCount  = Math.max(1, Math.floor(segLen / 0.65))
+  const matDisc = new THREE.MeshBasicMaterial({ color: 0x1a55cc })
+  const matRing = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+  for (let i = 1; i < mCount; i++) {
+    const t  = i / mCount
+    const mx = pts[0].x + (pts[pts.length-1].x - pts[0].x) * t
+    const mz = pts[0].z + (pts[pts.length-1].z - pts[0].z) * t
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.025,12), matDisc.clone())
+    disc.position.set(mx, 0.1, mz)
+    const ring = new THREE.Mesh(Object.assign(new THREE.RingGeometry(0.10,0.145,12), {}).rotateX(-Math.PI/2), matRing.clone())
+    ring.position.set(mx, 0.12, mz)
+    wpUserGroup.add(disc, ring)
+  }
+}
+
+function wpDrawUserNode(x: number, z: number, type: 'valve'|'hydrant'|'meter') {
+  if (!THREE || !wpUserGroup) return
+  const mat = new THREE.MeshBasicMaterial({ color: type === 'hydrant' ? 0xee3333 : type === 'valve' ? 0xe0a030 : 0x1a55cc })
+  if (type === 'hydrant') {
+    const hBar = new THREE.Mesh(new THREE.BoxGeometry(0.52,0.07,0.14), mat)
+    hBar.position.set(x, 0.22, z)
+    const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.14,0.07,0.52), mat)
+    vBar.position.set(x, 0.22, z)
+    const ring = new THREE.Mesh(Object.assign(new THREE.RingGeometry(0.27,0.32,20),{}).rotateX(-Math.PI/2), new THREE.MeshBasicMaterial({ color: 0xee3333, side: THREE.DoubleSide }))
+    ring.position.set(x, 0.23, z)
+    wpUserGroup.add(hBar, vBar, ring)
+  } else if (type === 'valve') {
+    const b1 = new THREE.Mesh(new THREE.BoxGeometry(0.46,0.07,0.14), mat); b1.position.set(x,0.22,z); b1.rotation.y = Math.PI/4
+    const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.46,0.07,0.14), mat); b2.position.set(x,0.22,z); b2.rotation.y = -Math.PI/4
+    const ring = new THREE.Mesh(Object.assign(new THREE.RingGeometry(0.25,0.32,20),{}).rotateX(-Math.PI/2), new THREE.MeshBasicMaterial({ color: 0xe0a030, side: THREE.DoubleSide }))
+    ring.position.set(x, 0.23, z)
+    wpUserGroup.add(b1, b2, ring)
+  } else {
+    // meter — blue disc
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.06,16), mat)
+    disc.position.set(x, 0.2, z)
+    const ring = new THREE.Mesh(Object.assign(new THREE.RingGeometry(0.18,0.24,16),{}).rotateX(-Math.PI/2), new THREE.MeshBasicMaterial({ color: 0x1a55cc, side: THREE.DoubleSide }))
+    ring.position.set(x, 0.22, z)
+    wpUserGroup.add(disc, ring)
+  }
+}
+
+function startWPDraw(cx: number, cy: number) {
+  const p = getGroundPoint(cx, cy)
+  if (!p || !controls) return false
+  wpDrawing = true
+  wpDrawPoints.length = 0
+  wpDrawPoints.push(p.clone())
+  if (controls) controls.enabled = false
+  return true
+}
+
+function updateWPDraw(cx: number, cy: number) {
+  if (!wpDrawing || !THREE || !scene) return
+  const p = getGroundPoint(cx, cy)
+  if (!p) return
+  const last = wpDrawPoints[wpDrawPoints.length - 1]
+  if (last && p.distanceTo(last) < 0.1) return
+  wpDrawPoints.push(p.clone())
+  // preview line
+  if (wpPreviewLine) { scene.remove(wpPreviewLine); wpPreviewLine = null }
+  if (wpDrawPoints.length >= 2) {
+    const geo = new THREE.BufferGeometry().setFromPoints(wpDrawPoints)
+    wpPreviewLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: wpPipeColor() }))
+    scene.add(wpPreviewLine)
+  }
+}
+
+function stopWPDraw(commit: boolean) {
+  if (wpPreviewLine) { scene?.remove(wpPreviewLine); wpPreviewLine = null }
+  if (commit && wpDrawPoints.length >= 2) {
+    ensureWPUserGroup()
+    const id   = `UP-${++wpUserIdSeed}`
+    const pts  = wpDrawPoints.map(p => ({ x: p.x, z: p.z }))
+    const midX = (pts[0].x + pts[pts.length-1].x) / 2
+    const midZ = (pts[0].z + pts[pts.length-1].z) / 2
+    const diam = wpToolDiam.value >= 25 ? Math.round(wpToolDiam.value / 25.4) + '"' : wpToolDiam.value + 'mm'
+    const mat_s: any = { pvc:'CAS', ductile_iron:'DIP', hdpe:'HDPE', steel:'STL' }
+    const label = `${diam} ${mat_s[wpToolMat.value] ?? wpToolMat.value.toUpperCase()}`
+    wpUserPipes.value.push({ id, pts, diam: wpToolDiam.value, mat: wpToolMat.value, status: wpToolStatus.value, label, midX, midZ })
+    wpDrawUserPipe(pts)
+  }
+  wpDrawPoints.length = 0
+  wpDrawing = false
+  if (controls) controls.enabled = true
+}
+
+function placeWPNode(cx: number, cy: number) {
+  const p = getGroundPoint(cx, cy)
+  if (!p) return
+  ensureWPUserGroup()
+  const id = `UN-${++wpUserIdSeed}`
+  wpUserNodes.value.push({ id, type: wpToolMode.value as any, x: p.x, z: p.z })
+  wpDrawUserNode(p.x, p.z, wpToolMode.value as any)
+}
+
+function undoWPLast() {
+  // undo last pipe or node — rebuild group
+  if (wpUserPipes.value.length === 0 && wpUserNodes.value.length === 0) return
+  if (wpUserNodes.value.length > 0 && (
+    wpUserPipes.value.length === 0 ||
+    parseInt(wpUserNodes.value[wpUserNodes.value.length-1].id.split('-')[1]) >
+    parseInt(wpUserPipes.value[wpUserPipes.value.length-1].id.split('-')[1])
+  )) {
+    wpUserNodes.value.pop()
+  } else {
+    wpUserPipes.value.pop()
+  }
+  rebuildWPUserGroup()
+}
+
+function clearWPUser() {
+  wpUserPipes.value = []
+  wpUserNodes.value = []
+  if (wpUserGroup) { scene?.remove(wpUserGroup); wpUserGroup = null }
+  wpUserPipeScreen.value = []
+  wpUserNodeScreen.value = []
+}
+
+function rebuildWPUserGroup() {
+  if (wpUserGroup) { scene?.remove(wpUserGroup); wpUserGroup = null }
+  wpUserPipeScreen.value = []
+  wpUserNodeScreen.value = []
+  if (!scene || !THREE) return
+  wpUserGroup = new THREE.Group(); scene.add(wpUserGroup)
+  for (const p of wpUserPipes.value) wpDrawUserPipe(p.pts)
+  for (const n of wpUserNodes.value) wpDrawUserNode(n.x, n.z, n.type)
+}
+
+function updateWPUserScreenPos() {
+  if (!camera || !renderer || !THREE) return
+  const rect = renderer.domElement.getBoundingClientRect()
+  const toScreen = (wx: number, wz: number, wy = 0.2) => {
+    const v = new THREE.Vector3(wx, wy, wz)
+    v.project(camera)
+    return { x: (v.x*.5+.5)*rect.width+rect.left, y: (-v.y*.5+.5)*rect.height+rect.top, visible: v.z < 1 }
+  }
+  wpUserPipeScreen.value = wpUserPipes.value.map(p => ({ id:p.id, pipe:p, ...toScreen(p.midX, p.midZ, 0.1) }))
+  wpUserNodeScreen.value = wpUserNodes.value.map(n => ({ id:n.id, node:n, ...toScreen(n.x, n.z, 0.35) }))
+}
+
+// ── อบต. Boundary Layer ──────────────────────────────────────────
+function clearTambonLayer() {
+  if (tambonGroup) { scene?.remove(tambonGroup); tambonGroup = null }
+  tambonAreas.value = []
+  tambonLabelPos.value = []
+}
+
+function buildRingsFromWayIds(
+  wayIds: number[],
+  wayNodeMap: Map<number, number[]>,
+  nodeMap: Map<number, { lat: number; lon: number }>
+): { lat: number; lon: number }[][] {
+  const ways = wayIds.map(id => ({ id, nodes: wayNodeMap.get(id) || [] })).filter(w => w.nodes.length > 0)
+  if (!ways.length) return []
+  const rings: { lat: number; lon: number }[][] = []
+  const used = new Set<number>()
+  while (used.size < ways.length) {
+    const startWay = ways.find(w => !used.has(w.id))
+    if (!startWay) break
+    used.add(startWay.id)
+    let chain = [...startWay.nodes]
+    let changed = true
+    while (changed) {
+      changed = false
+      const head = chain[0], tail = chain[chain.length - 1]
+      for (const w of ways) {
+        if (used.has(w.id) || !w.nodes.length) continue
+        const wn = w.nodes, wRev = [...wn].reverse()
+        if (wn[0] === tail)            { chain.push(...wn.slice(1));    used.add(w.id); changed = true; break }
+        if (wRev[0] === tail)          { chain.push(...wRev.slice(1));   used.add(w.id); changed = true; break }
+        if (wn[wn.length-1] === head)  { chain.unshift(...wn.slice(0,-1)); used.add(w.id); changed = true; break }
+        if (wRev[wRev.length-1]===head){ chain.unshift(...wRev.slice(0,-1)); used.add(w.id); changed = true; break }
+      }
+    }
+    const ring = chain.map(nid => nodeMap.get(nid)).filter(Boolean) as { lat: number; lon: number }[]
+    if (ring.length >= 2) rings.push(ring)
+  }
+  return rings
+}
+
+async function overpassQuery(query: string) {
+  const res = await fetch('/api/overpass', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  })
+  if (!res.ok) throw new Error(`Overpass error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+async function loadTambonLayer() {
+  if (!THREE || !scene) return
+  const myToken = ++tambonLoadToken
+  tambonLoading.value = true
+  tambonError.value = ""
+  clearTambonLayer()
+  const z = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
+  try {
+    // Use ±0.25° bbox (~55 km) which covers a typical Thai amphoe
+    const pad = 0.25
+    const south = mapLat.value - pad, west = mapLng.value - pad
+    const north = mapLat.value + pad, east = mapLng.value + pad
+    const bbox = `${south},${west},${north},${east}`
+
+    const data = await overpassQuery(
+      `[out:json][timeout:60];relation["boundary"="administrative"]["admin_level"~"^(7|8|9|10)$"](${bbox});out body;>;out skel qt;`
+    )
+    if (myToken !== tambonLoadToken) { tambonLoading.value = false; return }
+
+    const nodeMap = new Map<number, { lat: number; lon: number }>()
+    const wayNodeMap = new Map<number, number[]>()
+    for (const el of data.elements) {
+      if (el.type === 'node') nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+      if (el.type === 'way')  wayNodeMap.set(el.id, el.nodes || [])
+    }
+
+    tambonGroup = new THREE.Group()
+    const areas: TambonArea[] = []
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.9 })
+    const fillMat = new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false })
+
+    for (const el of data.elements) {
+      if (el.type !== 'relation') continue
+      const name = el.tags?.['name:th'] || el.tags?.name || el.tags?.local_name || `อบต. ${el.id}`
+      const outerWayIds = (el.members || [])
+        .filter((m: any) => m.type === 'way' && (m.role === 'outer' || m.role === ''))
+        .map((m: any) => m.ref as number)
+      const rings = buildRingsFromWayIds(outerWayIds, wayNodeMap, nodeMap)
+      if (!rings.length) continue
+      let sumX = 0, sumZ = 0, ptCount = 0
+      for (const ring of rings) {
+        if (ring.length < 2) continue
+        const pts3: number[] = []
+        const pts2: { x: number; z: number }[] = []
+        for (const pt of ring) {
+          const wp = latLngToWorld(pt.lat, pt.lon, mapLat.value, mapLng.value, z)
+          pts3.push(wp.x, 0.04, wp.z)
+          pts2.push(wp)
+          sumX += wp.x; sumZ += wp.z; ptCount++
+        }
+        // Outline
+        const lineGeo = new THREE.BufferGeometry()
+        lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts3, 3))
+        tambonGroup.add(new THREE.Line(lineGeo, lineMat))
+        // Fill polygon (simple fan triangulation from centroid)
+        if (pts2.length >= 3) {
+          const cx2 = pts2.reduce((s, p) => s + p.x, 0) / pts2.length
+          const cz2 = pts2.reduce((s, p) => s + p.z, 0) / pts2.length
+          const verts: number[] = []
+          for (let i = 0; i < pts2.length - 1; i++) {
+            verts.push(cx2, 0.03, cz2, pts2[i].x, 0.03, pts2[i].z, pts2[i+1].x, 0.03, pts2[i+1].z)
+          }
+          const fillGeo = new THREE.BufferGeometry()
+          fillGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+          tambonGroup.add(new THREE.Mesh(fillGeo, fillMat))
+        }
+      }
+      if (ptCount > 0) areas.push({ id: el.id, name, midX: sumX / ptCount, midZ: sumZ / ptCount })
+    }
+    if (myToken !== tambonLoadToken) { tambonLoading.value = false; return }
+    scene.add(tambonGroup)
+    tambonAreas.value = areas
+  } catch (e: any) {
+    console.error('Tambon layer error:', e)
+    if (myToken === tambonLoadToken) tambonError.value = e?.message || 'โหลดข้อมูลไม่สำเร็จ'
+  }
+  if (myToken === tambonLoadToken) tambonLoading.value = false
+}
+
+function updateTambonLabelPos() {
+  if (!camera || !renderer || !THREE || !tambonAreas.value.length) {
+    if (tambonLabelPos.value.length) tambonLabelPos.value = []
+    return
+  }
+  const rect = renderer.domElement.getBoundingClientRect()
+  tambonLabelPos.value = tambonAreas.value.map(a => {
+    const v = new THREE.Vector3(a.midX, 0.04, a.midZ)
+    v.project(camera)
+    return { id: a.id, name: a.name, x: (v.x*.5+.5)*rect.width+rect.left, y: (-v.y*.5+.5)*rect.height+rect.top, visible: v.z < 1 }
+  })
+}
+
+function toggleTambonLayer() {
+  tambonVisible.value = !tambonVisible.value
+  if (tambonVisible.value) loadTambonLayer()
+  else clearTambonLayer()
+}
 // ───────────────────────────────────────────────────────────────
 
 const localFileMap = new Map<string, string>()
@@ -1129,10 +1695,10 @@ async function initThree() {
   controls.enableDamping = true
   controls.dampingFactor = 0.06
   controls.target.set(...defaultTarget)
-  controls.minDistance = 1
-  controls.maxDistance = 400
-  controls.minPolarAngle = Math.PI * 0.2
-  controls.maxPolarAngle = Math.PI * 0.48
+  controls.minDistance = 0.1
+  controls.maxDistance = 50000
+  controls.minPolarAngle = 0
+  controls.maxPolarAngle = Math.PI / 2 - 0.01
 
   hemiLight = new THREE.HemisphereLight(0xeff6ff, 0x7190aa, 1.12)
   scene.add(hemiLight)
@@ -1219,6 +1785,16 @@ async function initThree() {
     updateWalkMovement()
     updateCctvMarkerPositions()
     updateWaterMarkerPositions()
+    updateWaterPipeScreenPos()
+    updateWPUserScreenPos()
+    updateTambonLabelPos()
+    // Update compass: N arrow rotation relative to camera look direction
+    if (camera && controls) {
+      const dx = controls.target.x - camera.position.x
+      const dz = controls.target.z - camera.position.z
+      const len = Math.sqrt(dx * dx + dz * dz)
+      if (len > 0.001) compassAngle.value = Math.atan2(dx / len, -(dz / len)) * 180 / Math.PI
+    }
     renderer.render(scene, camera)
   }
   animate()
@@ -1335,14 +1911,12 @@ function addMapBackdrop() {
   helper.material.opacity = 0.09
   scene.add(helper)
 
+  // Subdivided plane so terrain elevation can be applied per-vertex
   const mapSurface = new THREE.Mesh(
-    new THREE.PlaneGeometry(MAP_SURFACE_SIZE, MAP_SURFACE_SIZE),
-    new THREE.MeshBasicMaterial({
+    new THREE.PlaneGeometry(MAP_SURFACE_SIZE, MAP_SURFACE_SIZE, TERRAIN_SEG, TERRAIN_SEG),
+    new THREE.MeshLambertMaterial({
       color: 0xffffff,
-      transparent: false,
-      opacity: 1,
       fog: false,
-      toneMapped: false,
     }),
   )
   mapSurface.rotation.x = -Math.PI / 2
@@ -1399,7 +1973,7 @@ async function loadTileWithFallback(providers: string[], tx: number, ty: number,
 
 async function buildMapTexture(lat: number, lng: number, z: number) {
   if (!THREE) return null
-  const tileSize = 512   // @2x retina tiles = 512px each → sharper map
+  const tileSize = 256   // 1x tiles, canvas = 11×256=2816px ปลอดภัยสำหรับ GPU
   const span = MAP_TILE_SPAN
   const half = Math.floor(span / 2)
   const canvas = document.createElement("canvas")
@@ -1413,10 +1987,12 @@ async function buildMapTexture(lat: number, lng: number, z: number) {
   const tileX = Math.floor(lonToTileX(lng, z))
   const tileY = Math.floor(latToTileY(lat, z))
   const providers = [
-    "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-    "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-    "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-    "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+    // CartoDB Voyager – ถนนขาว อาคารชัด อัพเดทจาก OSM (1x tiles = 256px)
+    "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    // OSM fallback
     "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   ]
 
@@ -1467,8 +2043,8 @@ function shiftPinnedModelsForMapChange(
   toZoom: number,
 ) {
   if (!THREE || modelEntities.value.length === 0) return
-  const zFrom = Math.max(14, Math.min(19, Math.round(fromZoom)))
-  const zTo = Math.max(14, Math.min(19, Math.round(toZoom)))
+  const zFrom = Math.max(1, Math.min(20, Math.round(fromZoom)))
+  const zTo = Math.max(1, Math.min(20, Math.round(toZoom)))
   const unitsFrom = MAP_SURFACE_SIZE / MAP_TILE_SPAN
   const unitsTo = MAP_SURFACE_SIZE / MAP_TILE_SPAN
   const fromCenterX = lonToTileX(fromLng, zFrom)
@@ -1503,10 +2079,11 @@ async function applyMapLocation(options?: { anchorFrom?: { lat: number; lng: num
   const token = ++mapLoadToken
   ++osmLoadToken
   clearOSMGroups()
+  terrainField = null   // will be rebuilt by loadTerrain for the new location
   statusText.value = "Loading map tiles..."
   mapLat.value = Math.max(-85.0511, Math.min(85.0511, Number(mapLat.value) || 0))
   mapLng.value = ((Number(mapLng.value) || 0) + 540) % 360 - 180
-  const z = Math.max(14, Math.min(19, Math.round(mapZoom.value)))
+  const z = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
   mapZoom.value = z
 
   try {
@@ -1528,7 +2105,10 @@ async function applyMapLocation(options?: { anchorFrom?: { lat: number; lng: num
     frameAllModels()
     statusText.value = `Map loaded (${built.loadedTiles}/${built.totalTiles} tiles)`
     loadingSteps.value[4].done = true
+    // Load terrain first so trees/buildings get correct ground height
+    await loadTerrain(mapLat.value, mapLng.value, z)
     loadOSMScene(mapLat.value, mapLng.value, z)
+    if (tambonVisible.value) loadTambonLayer()
   } catch (err: any) {
     statusText.value = `Map load failed: ${err?.message || "network/tile blocked"}`
   }
@@ -1554,28 +2134,244 @@ function latLngToWorld(lat: number, lng: number, centerLat: number, centerLng: n
   }
 }
 
+function getMapBbox(lat: number, lng: number, z: number) {
+  const half = Math.floor(MAP_TILE_SPAN / 2)
+  const tileX = Math.floor(lonToTileX(lng, z))
+  const tileY = Math.floor(latToTileY(lat, z))
+  return {
+    north: tileYToLat(tileY - half, z),
+    south: tileYToLat(tileY + half + 1, z),
+    west: tileXToLon(tileX - half, z),
+    east: tileXToLon(tileX + half + 1, z),
+  }
+}
+
+// ── Terrain elevation (AWS Terrarium PNG tiles) ──────────────────────────────
+function loadImgToCanvas(ctx: CanvasRenderingContext2D, url: string, dx: number, dy: number): Promise<void> {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.crossOrigin = "anonymous"
+    img.onload  = () => { ctx.drawImage(img, dx, dy); resolve() }
+    img.onerror = () => resolve()   // fail silently, leave those pixels black (sea level)
+    img.src = url
+  })
+}
+
+function getTerrainHeight(worldX: number, worldZ: number): number {
+  if (!terrainField) return 0
+  const seg = TERRAIN_SEG
+  // worldX: -HALF..+HALF → fracX: 0..1
+  const HALF = MAP_SURFACE_SIZE / 2
+  const fracX = Math.max(0, Math.min(1, (worldX + HALF) / MAP_SURFACE_SIZE))
+  // worldZ: -HALF..+HALF maps to iy 0..seg (north→south matches iy 0→seg)
+  const fracY = Math.max(0, Math.min(1, (worldZ + HALF) / MAP_SURFACE_SIZE))
+  const ix0 = Math.floor(fracX * seg)
+  const iy0 = Math.floor(fracY * seg)
+  const ix1 = Math.min(ix0 + 1, seg)
+  const iy1 = Math.min(iy0 + 1, seg)
+  const tx  = fracX * seg - ix0
+  const ty  = fracY * seg - iy0
+  const h00 = terrainField[iy0 * (seg + 1) + ix0] ?? 0
+  const h10 = terrainField[iy0 * (seg + 1) + ix1] ?? 0
+  const h01 = terrainField[iy1 * (seg + 1) + ix0] ?? 0
+  const h11 = terrainField[iy1 * (seg + 1) + ix1] ?? 0
+  return h00 * (1 - tx) * (1 - ty) + h10 * tx * (1 - ty) + h01 * (1 - tx) * ty + h11 * tx * ty
+}
+
+async function loadTerrain(lat: number, lng: number, z: number) {
+  if (!THREE || !mapSurfaceMesh) return
+  // Flatten first so old terrain doesn't linger if new fetch fails
+  const posInit = mapSurfaceMesh.geometry.attributes.position
+  for (let i = 0; i < posInit.count; i++) posInit.setZ(i, 0)
+  posInit.needsUpdate = true
+  const tileWidthM  = (2 * Math.PI * 6371000 * Math.cos(lat * Math.PI / 180)) / Math.pow(2, z)
+  const wupm        = (MAP_SURFACE_SIZE / MAP_TILE_SPAN) / tileWidthM
+  terrainWorldUnitsPerMeter = wupm
+
+  const { south, west, north, east } = getMapBbox(lat, lng, z)
+  // Use a lower zoom for terrain so we fetch just a few tiles
+  const tz    = Math.max(8, Math.min(z, 13))
+  const txMin = Math.floor(lonToTileX(west,  tz))
+  const txMax = Math.floor(lonToTileX(east,  tz))
+  const tyMin = Math.floor(latToTileY(north, tz))  // north → smaller Y
+  const tyMax = Math.floor(latToTileY(south, tz))
+
+  const tilesX    = txMax - txMin + 1
+  const tilesY    = tyMax - tyMin + 1
+  const tPx       = 256
+  const totalW    = tilesX * tPx
+  const totalH    = tilesY * tPx
+
+  const canvas    = document.createElement("canvas")
+  canvas.width    = totalW
+  canvas.height   = totalH
+  const ctx       = canvas.getContext("2d")!
+
+  const fetches: Promise<void>[] = []
+  for (let ty = tyMin; ty <= tyMax; ty++)
+    for (let tx = txMin; tx <= txMax; tx++) {
+      const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${tz}/${tx}/${ty}.png`
+      fetches.push(loadImgToCanvas(ctx, url, (tx - txMin) * tPx, (ty - tyMin) * tPx))
+    }
+  await Promise.allSettled(fetches)
+
+  let imgData: ImageData
+  try {
+    imgData = ctx.getImageData(0, 0, totalW, totalH)
+  } catch {
+    // CORS blocked — skip terrain deformation, leave flat
+    return
+  }
+  const mosaicW   = tileXToLon(txMax + 1, tz) - tileXToLon(txMin, tz)
+  const mosaicN   = tileYToLat(tyMin,     tz)
+  const mosaicS   = tileYToLat(tyMax + 1, tz)
+  const mosaicH   = mosaicN - mosaicS
+
+  const seg       = TERRAIN_SEG
+  const field     = new Float32Array((seg + 1) * (seg + 1))
+
+  for (let iy = 0; iy <= seg; iy++) {
+    for (let ix = 0; ix <= seg; ix++) {
+      const sLng  = west  + (ix / seg) * (east  - west)
+      const sLat  = north - (iy / seg) * (north - south)
+      const px    = Math.max(0, Math.min(totalW - 1, Math.floor((sLng - tileXToLon(txMin, tz)) / mosaicW * totalW)))
+      const py    = Math.max(0, Math.min(totalH - 1, Math.floor((mosaicN - sLat) / mosaicH * totalH)))
+      const di    = (py * totalW + px) * 4
+      const r     = imgData.data[di], g = imgData.data[di + 1], b = imgData.data[di + 2]
+      const elevM = Math.max(0, (r * 256 + g + b / 256) - 32768)
+      field[iy * (seg + 1) + ix] = elevM * wupm * TERRAIN_ELEV_SCALE
+    }
+  }
+
+  // ── Normalize: subtract min so the lowest point sits at y=0 ──────────────
+  // Without this, even flat Bangkok (≈5 m ASL) lifts the map surface above
+  // y=0 and buildings/trees placed at y=0 appear to float or sink.
+  let minH = Infinity
+  for (let i = 0; i < field.length; i++) if (field[i] < minH) minH = field[i]
+  if (minH > 0) for (let i = 0; i < field.length; i++) field[i] -= minH
+
+  terrainField = field
+
+  // Apply heights to map surface mesh vertices.
+  // PlaneGeometry (rotation.x = -PI/2): local Z maps to world Y.
+  const posAttr = mapSurfaceMesh.geometry.attributes.position
+  for (let iy = 0; iy <= seg; iy++) {
+    for (let ix = 0; ix <= seg; ix++) {
+      posAttr.setZ(iy * (seg + 1) + ix, field[iy * (seg + 1) + ix])
+    }
+  }
+  posAttr.needsUpdate = true
+  mapSurfaceMesh.geometry.computeVertexNormals()
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseBuildingGeometry(geometry: string): number[][][] {
+  const text = (geometry || "").trim()
+  if (!text) return []
+
+  // ── GeoJSON geometry (from Microsoft / MS-buildings endpoint) ──
+  if (text.startsWith("{")) {
+    try {
+      const geom = JSON.parse(text)
+      if (geom.type === "Polygon") {
+        const ring = geom.coordinates?.[0]
+        return ring?.length >= 3 ? [ring] : []
+      }
+      if (geom.type === "MultiPolygon") {
+        return (geom.coordinates as number[][][][])
+          .map((poly: number[][][]) => poly[0])
+          .filter((ring: number[][]) => ring?.length >= 3)
+      }
+    } catch {}
+    return []
+  }
+
+  // ── WKT (from Supabase buildings_ml) ──
+  const groups = text.startsWith("MULTIPOLYGON")
+    ? [...text.matchAll(/\(\(\((.*?)\)\)\)/g)].map(match => match[1])
+    : text.startsWith("POLYGON")
+      ? [...text.matchAll(/\(\((.*?)\)\)/g)].map(match => match[1])
+      : []
+
+  return groups
+    .map(group => group.split("),(")[0])
+    .map(ring => ring
+      .split(",")
+      .map(pair => pair.trim().split(/\s+/).map(Number))
+      .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat))
+    )
+    .filter(ring => ring.length >= 3)
+}
+
 async function fetchOSMData(lat: number, lng: number, z: number) {
-  // Round lat/lng to 4 decimal places for cache key
   const tileXk = Math.floor(lonToTileX(lng, z))
   const tileYk = Math.floor(latToTileY(lat, z))
   const cacheKey = `${tileXk},${tileYk},${z}`
   if (osmDataCache.has(cacheKey)) return osmDataCache.get(cacheKey)
 
-  // Use exact integer tile indices matching buildMapTexture (Math.floor, same as tile grid)
-  const half = Math.floor(MAP_TILE_SPAN / 2)
-  const tileX = Math.floor(lonToTileX(lng, z))
-  const tileY = Math.floor(latToTileY(lat, z))
-  // right/south edge = left edge of (last tile + 1)
-  const north = tileYToLat(tileY - half, z)
-  const south = tileYToLat(tileY + half + 1, z)
-  const west  = tileXToLon(tileX - half, z)
-  const east  = tileXToLon(tileX + half + 1, z)
-  const bbox = `${south},${west},${north},${east}`
-  const query = `[out:json][timeout:30][maxsize:67108864];(way["building"](${bbox});>;node["natural"="tree"](${bbox});way["natural"="wood"](${bbox});>;way["landuse"="forest"](${bbox});>;way["leisure"="park"](${bbox});>;);out body;`
-  const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`)
-  if (!res.ok) throw new Error(`Overpass ${res.status}`)
-  const data = await res.json()
-  // Cache up to 8 different locations
+  const { south, west, north, east } = getMapBbox(lat, lng, z)
+  const midLat = (south + north) / 2
+  const midLng = (west + east) / 2
+
+  // center 5×5 bbox สำหรับ OSM buildings (ไม่ timeout)
+  const cHalf = 2
+  const cTX = Math.floor(lonToTileX(lng, z))
+  const cTY = Math.floor(latToTileY(lat, z))
+  const cS = tileYToLat(cTY + cHalf + 1, z)
+  const cN = tileYToLat(cTY - cHalf, z)
+  const cW = tileXToLon(cTX - cHalf, z)
+  const cE = tileXToLon(cTX + cHalf + 1, z)
+  const cBbox = `${cS},${cW},${cN},${cE}`
+  const fullBbox = `${south},${west},${north},${east}`
+
+  // Query เดียว: ต้นไม้ + พืชพรรณ + น้ำ + อาคาร center (max 2 Overpass concurrent)
+  const osmQuery = `[out:json][timeout:45][maxsize:134217728];(node["natural"="tree"](${fullBbox});way["natural"="wood"](${fullBbox});way["landuse"="forest"](${fullBbox});way["leisure"="park"](${fullBbox});way["natural"="scrub"](${fullBbox});way["landuse"="orchard"](${fullBbox});way["natural"="grassland"](${fullBbox});way["natural"="heath"](${fullBbox});way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
+
+  // Supabase: 4 quadrant parallel (ไม่มี rate limit)
+  const sq1 = `/api/buildings?south=${midLat}&west=${west}&north=${north}&east=${midLng}`
+  const sq2 = `/api/buildings?south=${midLat}&west=${midLng}&north=${north}&east=${east}`
+  const sq3 = `/api/buildings?south=${south}&west=${west}&north=${midLat}&east=${midLng}`
+  const sq4 = `/api/buildings?south=${south}&west=${midLng}&north=${midLat}&east=${east}`
+
+  // Microsoft Global ML Building Footprints (ครอบคลุมทั่วไทยรวมพื้นที่ชนบท)
+  const msUrl = `/api/ms-buildings?south=${south}&west=${west}&north=${north}&east=${east}`
+
+  const [osmResult, r1, r2, r3, r4, rMs] = await Promise.allSettled([
+    fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQuery)}`),
+    fetch(sq1), fetch(sq2), fetch(sq3), fetch(sq4),
+    fetch(msUrl),
+  ])
+
+  if (osmResult.status !== "fulfilled") throw osmResult.reason
+  if (!osmResult.value.ok) throw new Error(`Overpass ${osmResult.value.status}`)
+
+  const osmData = await osmResult.value.json()
+
+  // รวม Supabase buildings จากทุก quadrant (dedup ที่ขอบ)
+  const allBuildings: BuildingsMlRow[] = []
+  const seenIds = new Set<string>()
+  for (const r of [r1, r2, r3, r4]) {
+    if (r.status !== "fulfilled" || !r.value.ok) continue
+    const rows: BuildingsMlRow[] = await r.value.json()
+    for (const row of rows) {
+      const key = `${row.lat.toFixed(6)},${row.lng.toFixed(6)}`
+      if (!seenIds.has(key)) { seenIds.add(key); allBuildings.push(row) }
+    }
+  }
+
+  // เพิ่ม Microsoft buildings (ใช้เมื่อ Supabase ไม่มีข้อมูล เช่น พื้นที่ชนบท)
+  if (rMs.status === "fulfilled" && rMs.value.ok) {
+    try {
+      const msRows: BuildingsMlRow[] = await rMs.value.json()
+      for (const row of msRows) {
+        const key = `${row.lat.toFixed(5)},${row.lng.toFixed(5)}`
+        if (!seenIds.has(key)) { seenIds.add(key); allBuildings.push(row) }
+      }
+    } catch { /* ไม่มี MS data — ไม่เป็นไร */ }
+  }
+
+  const data: OSMSceneData = { osm: osmData, buildings: allBuildings }
+
   if (osmDataCache.size >= 8) osmDataCache.delete(osmDataCache.keys().next().value)
   osmDataCache.set(cacheKey, data)
   return data
@@ -1584,6 +2380,8 @@ async function fetchOSMData(lat: number, lng: number, z: number) {
 function clearOSMGroups() {
   if (osmBuildingGroup) { scene?.remove(osmBuildingGroup); osmBuildingGroup = null }
   if (osmTreeGroup) { scene?.remove(osmTreeGroup); osmTreeGroup = null }
+  for (const g of osmOuterBuildingGroups) scene?.remove(g)
+  osmOuterBuildingGroups = []
 }
 
 async function buildOSMScene(data: any, centerLat: number, centerLng: number, z: number, token: number) {
@@ -1591,8 +2389,10 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
   clearOSMGroups()
 
   const nodeMap = new Map<number, { lat: number; lon: number }>()
-  for (const el of data.elements) {
+  const wayMap = new Map<number, number[]>()  // way id → node ids (สำหรับ relation multipolygon)
+  for (const el of data.osm.elements) {
     if (el.type === "node") nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+    if (el.type === "way" && el.nodes) wayMap.set(el.id, el.nodes)
   }
 
   const tileWidthM = (2 * Math.PI * 6371000 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, z)
@@ -1603,21 +2403,65 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
   const trunkGeos: any[] = []
   const crownGeos: any[] = []
 
-  // --- Pass 1: Buildings (all) ---
-  for (const el of data.elements) {
+  // Helper: centroid terrain height for a set of world points
+  function bldGroundY(pts: { x: number; z: number }[]): number {
+    if (!pts.length) return 0
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
+    const cz = pts.reduce((s, p) => s + p.z, 0) / pts.length
+    return getTerrainHeight(cx, cz)
+  }
+
+  // --- Pass 1: Buildings from Supabase / Microsoft ML ---
+  for (const building of data.buildings) {
+    if (token !== osmLoadToken) return
+    const rings = parseBuildingGeometry(building.geometry)
+    const heightM = Math.min(40, Math.max(6, Math.sqrt(Math.max(Number(building.area_m2) || 36, 36)) * 0.85))
+    const h = Math.min(heightM * worldUnitsPerMeter, 60)
+
+    // centroid terrain height from the building's lat/lng
+    const cWP    = latLngToWorld(building.lat, building.lng, centerLat, centerLng, z)
+    const groundY = getTerrainHeight(cWP.x, cWP.z)
+
+    for (const ring of rings) {
+      const pts = ring.map(([lngPt, latPt]) => latLngToWorld(latPt, lngPt, centerLat, centerLng, z))
+      if (pts.length < 3) continue
+
+      const shape = new THREE.Shape()
+      shape.moveTo(pts[0].x, -pts[0].z)
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+      shape.closePath()
+
+      const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
+      wallGeo.rotateX(-Math.PI / 2)
+      wallGeo.translate(0, groundY + 0.01, 0)
+      wallGeos.push(wallGeo)
+
+      const roofGeo = new THREE.ShapeGeometry(shape)
+      roofGeo.rotateX(-Math.PI / 2)
+      roofGeo.translate(0, groundY + h + 0.012, 0)
+      roofGeos.push(roofGeo)
+    }
+  }
+
+  // --- Pass 1b: Buildings from OSM Overpass ---
+  for (const el of data.osm.elements) {
     if (token !== osmLoadToken) return
     if (el.type !== "way" || !el.tags?.building || !el.nodes?.length) continue
+
     const pts: { x: number; z: number }[] = []
     for (const nid of el.nodes) {
       const nd = nodeMap.get(nid)
-      if (!nd) continue
-      pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z))
+      if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z))
     }
     if (pts.length < 3) continue
 
-    const levels = parseInt(el.tags?.["building:levels"] || el.tags?.levels || "3") || 3
-    const heightM = parseFloat(el.tags?.height || "0") || levels * 3.5
-    const h = Math.min(heightM * worldUnitsPerMeter, 60)  // cap very tall buildings
+    const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
+    const heightTag = parseFloat(el.tags?.["height"] || "0") || 0
+    const buildingType = el.tags?.building || "yes"
+    const defaultH = (buildingType === "apartments" || buildingType === "commercial" || buildingType === "office") ? 14 : 8
+    const heightM = heightTag > 0 ? Math.min(heightTag, 200) : levels > 0 ? levels * 3.2 : defaultH
+    const h = Math.min(heightM * worldUnitsPerMeter, 80)
+    const groundY = bldGroundY(pts)
 
     const shape = new THREE.Shape()
     shape.moveTo(pts[0].x, -pts[0].z)
@@ -1626,41 +2470,89 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
 
     const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
     wallGeo.rotateX(-Math.PI / 2)
-    wallGeo.translate(0, 0.01, 0)
+    wallGeo.translate(0, groundY + 0.01, 0)
     wallGeos.push(wallGeo)
 
-    const roofShape = new THREE.Shape()
-    roofShape.moveTo(pts[0].x, -pts[0].z)
-    for (let i = 1; i < pts.length; i++) roofShape.lineTo(pts[i].x, -pts[i].z)
-    roofShape.closePath()
-    const roofGeo = new THREE.ShapeGeometry(roofShape)
+    const roofGeo = new THREE.ShapeGeometry(shape)
     roofGeo.rotateX(-Math.PI / 2)
-    roofGeo.translate(0, h + 0.012, 0)
+    roofGeo.translate(0, groundY + h + 0.012, 0)
     roofGeos.push(roofGeo)
+  }
+
+  // --- Pass 1c: Relation multipolygon buildings ---
+  for (const el of data.osm.elements) {
+    if (token !== osmLoadToken) return
+    if (el.type !== "relation" || !el.tags?.building || !el.members?.length) continue
+
+    const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
+    const heightTag = parseFloat(el.tags?.["height"] || "0") || 0
+    const buildingType = el.tags?.building || "yes"
+    const defaultH = (buildingType === "apartments" || buildingType === "commercial" || buildingType === "office" || buildingType === "retail") ? 14 : 8
+    const heightM = heightTag > 0 ? Math.min(heightTag, 200) : levels > 0 ? levels * 3.2 : defaultH
+    const h = Math.min(heightM * worldUnitsPerMeter, 80)
+
+    const outerMembers = el.members.filter((m: any) => m.type === "way" && m.role === "outer")
+    for (const member of outerMembers) {
+      const nodeIds = wayMap.get(member.ref)
+      if (!nodeIds || nodeIds.length < 3) continue
+
+      const pts: { x: number; z: number }[] = []
+      for (const nid of nodeIds) {
+        const nd = nodeMap.get(nid)
+        if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z))
+      }
+      if (pts.length < 3) continue
+
+      const groundY = bldGroundY(pts)
+      const shape = new THREE.Shape()
+      shape.moveTo(pts[0].x, -pts[0].z)
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+      shape.closePath()
+
+      const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
+      wallGeo.rotateX(-Math.PI / 2)
+      wallGeo.translate(0, groundY + 0.01, 0)
+      wallGeos.push(wallGeo)
+
+      const roofGeo = new THREE.ShapeGeometry(shape)
+      roofGeo.rotateX(-Math.PI / 2)
+      roofGeo.translate(0, groundY + h + 0.012, 0)
+      roofGeos.push(roofGeo)
+    }
   }
 
   // Yield to browser between passes so the map is visible
   await new Promise(r => setTimeout(r, 0))
   if (token !== osmLoadToken) return
 
-  // Add buildings to scene early so user sees them while trees are processing
+  // Add buildings to scene early so user sees them while water/trees are processing
   osmBuildingGroup = new THREE.Group()
-  addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xb0b0b0 }), osmBuildingGroup, true)
-  addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x888888 }), osmBuildingGroup)
+  addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xc8c0b8 }), osmBuildingGroup, true)
+  addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), osmBuildingGroup)
   scene.add(osmBuildingGroup)
 
   await new Promise(r => setTimeout(r, 0))
   if (token !== osmLoadToken) return
 
-  // --- Pass 2: Trees (all) ---
-  for (const el of data.elements) {
+  await new Promise(r => setTimeout(r, 0))
+  if (token !== osmLoadToken) return
+
+  // --- Pass 2: Trees & vegetation ---
+  for (const el of data.osm.elements) {
     if (el.type === "node" && el.tags?.natural === "tree") {
       const wp = latLngToWorld(el.lat, el.lon, centerLat, centerLng, z)
-      collectTree(wp.x, wp.z, trunkGeos, crownGeos)
+      collectTree(wp.x, wp.z, trunkGeos, crownGeos, getTerrainHeight(wp.x, wp.z))
     }
 
-    const isGreenArea = el.type === "way" && el.nodes?.length >= 3 &&
-      (el.tags?.natural === "wood" || el.tags?.landuse === "forest" || el.tags?.leisure === "park")
+    const tags = el.tags || {}
+    const isForest  = tags.natural === "wood"      || tags.landuse === "forest"
+    const isPark    = tags.leisure === "park"
+    const isScrub   = tags.natural === "scrub"     || tags.natural === "heath"
+    const isOrchard = tags.landuse === "orchard"
+    const isGrass   = tags.natural === "grassland"
+    const isGreenArea = el.type === "way" && (el.nodes?.length ?? 0) >= 3 &&
+      (isForest || isPark || isScrub || isOrchard || isGrass)
+
     if (isGreenArea) {
       const pts: { x: number; z: number }[] = []
       for (const nid of el.nodes) {
@@ -1672,16 +2564,18 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
         const maxX = Math.max(...pts.map(p => p.x))
         const minZ = Math.min(...pts.map(p => p.z))
         const maxZ = Math.max(...pts.map(p => p.z))
-        const area = (maxX - minX) * (maxZ - minZ)
-        const count = Math.min(30, Math.max(2, Math.floor(area * 0.2)))
+        const bbox  = (maxX - minX) * (maxZ - minZ)
+        // density: forest/wood densest, scrub medium, park/orchard/grass sparse
+        const density = isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25
+        const count   = Math.min(400, Math.max(3, Math.floor(bbox * density)))
         for (let i = 0; i < count; i++) {
           let tx = 0, tz = 0, ok = false
-          for (let t = 0; t < 6; t++) {
+          for (let t = 0; t < 8; t++) {
             tx = minX + Math.random() * (maxX - minX)
             tz = minZ + Math.random() * (maxZ - minZ)
             if (pointInPoly(tx, tz, pts)) { ok = true; break }
           }
-          if (ok) collectTree(tx, tz, trunkGeos, crownGeos)
+          if (ok) collectTree(tx, tz, trunkGeos, crownGeos, getTerrainHeight(tx, tz))
         }
       }
     }
@@ -1731,29 +2625,179 @@ function pointInPoly(px: number, pz: number, poly: { x: number; z: number }[]) {
   return inside
 }
 
-function collectTree(x: number, z: number, trunkGeos: any[], crownGeos: any[]) {
+function collectTree(x: number, z: number, trunkGeos: any[], crownGeos: any[], y0 = 0) {
   const trunkH = 1.0 + Math.random() * 0.8
   const trunkR = 0.10 + Math.random() * 0.06
   const tg = new THREE.CylinderGeometry(trunkR * 0.5, trunkR, trunkH, 6)
-  tg.translate(x, trunkH / 2, z)
+  tg.translate(x, y0 + trunkH / 2, z)
   trunkGeos.push(tg)
   const crownR = 0.7 + Math.random() * 0.6
   const cg = new THREE.SphereGeometry(crownR, 6, 4)
-  cg.translate(x, trunkH + crownR * 0.65, z)
+  cg.translate(x, y0 + trunkH + crownR * 0.65, z)
   crownGeos.push(cg)
+}
+
+async function appendOSMBuildings(elements: any[], centerLat: number, centerLng: number, z: number, token: number) {
+  if (!THREE || !scene || !elements.length) return
+  const tileWidthM = (2 * Math.PI * 6371000 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, z)
+  const worldUnitsPerMeter = (MAP_SURFACE_SIZE / MAP_TILE_SPAN) / tileWidthM
+
+  const nodeMap = new Map<number, { lat: number; lon: number }>()
+  const wayMap = new Map<number, number[]>()
+  for (const el of elements) {
+    if (el.type === "node") nodeMap.set(el.id, { lat: el.lat, lon: el.lon })
+    if (el.type === "way" && el.nodes) wayMap.set(el.id, el.nodes)
+  }
+
+  const wallGeos: any[] = []
+  const roofGeos: any[] = []
+
+  for (const el of elements) {
+    if (token !== osmLoadToken) return
+    if (el.type === "way" && el.tags?.building && el.nodes?.length) {
+      const pts: { x: number; z: number }[] = []
+      for (const nid of el.nodes) {
+        const nd = nodeMap.get(nid)
+        if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z))
+      }
+      if (pts.length < 3) continue
+      const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
+      const ht = parseFloat(el.tags?.["height"] || "0") || 0
+      const bt = el.tags?.building || "yes"
+      const dh = (bt === "apartments" || bt === "commercial" || bt === "office") ? 14 : 8
+      const h = Math.min((ht > 0 ? Math.min(ht, 200) : levels > 0 ? levels * 3.2 : dh) * worldUnitsPerMeter, 80)
+      const gy = pts.length ? getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) : 0
+      const shape = new THREE.Shape()
+      shape.moveTo(pts[0].x, -pts[0].z)
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+      shape.closePath()
+      const wg = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
+      wg.rotateX(-Math.PI / 2); wg.translate(0, gy + 0.01, 0); wallGeos.push(wg)
+      const rg = new THREE.ShapeGeometry(shape)
+      rg.rotateX(-Math.PI / 2); rg.translate(0, gy + h + 0.012, 0); roofGeos.push(rg)
+    }
+    if (el.type === "relation" && el.tags?.building && el.members?.length) {
+      const levels = parseFloat(el.tags?.["building:levels"] || "0") || 0
+      const ht = parseFloat(el.tags?.["height"] || "0") || 0
+      const bt = el.tags?.building || "yes"
+      const dh = (bt === "apartments" || bt === "commercial" || bt === "office" || bt === "retail") ? 14 : 8
+      const h = Math.min((ht > 0 ? Math.min(ht, 200) : levels > 0 ? levels * 3.2 : dh) * worldUnitsPerMeter, 80)
+      for (const member of el.members.filter((m: any) => m.type === "way" && m.role === "outer")) {
+        const nids = wayMap.get(member.ref); if (!nids || nids.length < 3) continue
+        const pts: { x: number; z: number }[] = []
+        for (const nid of nids) { const nd = nodeMap.get(nid); if (nd) pts.push(latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)) }
+        if (pts.length < 3) continue
+        const gy = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length)
+        const shape = new THREE.Shape()
+        shape.moveTo(pts[0].x, -pts[0].z)
+        for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z)
+        shape.closePath()
+        const wg = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
+        wg.rotateX(-Math.PI / 2); wg.translate(0, gy + 0.01, 0); wallGeos.push(wg)
+        const rg = new THREE.ShapeGeometry(shape)
+        rg.rotateX(-Math.PI / 2); rg.translate(0, gy + h + 0.012, 0); roofGeos.push(rg)
+      }
+    }
+  }
+
+  if (!wallGeos.length || token !== osmLoadToken) return
+  await new Promise(r => setTimeout(r, 0))
+  if (token !== osmLoadToken) return
+
+  const group = new THREE.Group()
+  addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xc8c0b8 }), group, true)
+  addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), group)
+  osmOuterBuildingGroups.push(group)
+  scene.add(group)
 }
 
 async function loadOSMScene(lat: number, lng: number, z: number) {
   const token = osmLoadToken
   osmBuilding3dLoading.value = true
+  osmLoadingPct.value = 0
+  osmLoadingStep.value = "กำลังดึงข้อมูล OSM..."
   try {
-    const data = await fetchOSMData(lat, lng, z)
-    if (token !== osmLoadToken) return
+    // Phase 1 = 0–20%: center buildings + trees + Supabase
+    let data: any = null
+    for (let attempt = 1; attempt <= 10 && !data; attempt++) {
+      if (token !== osmLoadToken) return
+      osmLoadingStep.value = attempt > 1 ? `ดึงข้อมูล OSM+MS Buildings (retry ${attempt}/10)...` : "กำลังดึงข้อมูล OSM + Microsoft Buildings..."
+      try {
+        data = await fetchOSMData(lat, lng, z)
+        osmLoadingPct.value = 20
+      } catch (e) {
+        const wait = Math.min(attempt * 3000, 15000)
+        osmLoadingStep.value = `ดึงข้อมูลล้มเหลว รอ ${wait / 1000}s แล้ว retry...`
+        osmDataCache.delete(`${Math.floor(lonToTileX(lng, z))},${Math.floor(latToTileY(lat, z))},${Math.max(1, Math.min(20, Math.round(z)))}`)
+        await new Promise(r => setTimeout(r, wait))
+      }
+    }
+    if (!data || token !== osmLoadToken) return
+
+    osmLoadingStep.value = "กำลัง render อาคาร (ศูนย์กลาง)..."
+    osmLoadingPct.value = 25
     await buildOSMScene(data, lat, lng, z, token)
+    if (token !== osmLoadToken) return
+    osmLoadingPct.value = 40
+
+    // Phase 2 = 40–100%: 4 outer quadrants (each = 15%)
+    const { south, west, north, east } = getMapBbox(lat, lng, z)
+    const midLat = (south + north) / 2
+    const midLng = (west + east) / 2
+    const bldQ = (bb: string) =>
+      `[out:json][timeout:45][maxsize:134217728];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb}););(._;>;);out body;`
+    const outerBboxes = [
+      { bb: `${midLat},${west},${north},${midLng}`,  label: "บน-ซ้าย" },
+      { bb: `${midLat},${midLng},${north},${east}`,  label: "บน-ขวา" },
+      { bb: `${south},${west},${midLat},${midLng}`,  label: "ล่าง-ซ้าย" },
+      { bb: `${south},${midLng},${midLat},${east}`,  label: "ล่าง-ขวา" },
+    ]
+    const MAX_RETRY = 10
+    for (let qi = 0; qi < outerBboxes.length; qi++) {
+      if (token !== osmLoadToken) break
+      const { bb, label } = outerBboxes[qi]
+      osmLoadingStep.value = `โหลดอาคาร ${label} (${qi + 1}/4)...`
+      let success = false
+      for (let attempt = 1; attempt <= MAX_RETRY && !success; attempt++) {
+        if (token !== osmLoadToken) break
+        if (attempt > 1) osmLoadingStep.value = `อาคาร ${label} retry ${attempt}/10...`
+        try {
+          const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`)
+          if (!res.ok) {
+            const wait = Math.min(attempt * 3000, 15000)
+            osmLoadingStep.value = `อาคาร ${label} ล้มเหลว (${res.status}) รอ ${wait / 1000}s...`
+            await new Promise(r => setTimeout(r, wait))
+            continue
+          }
+          if (token !== osmLoadToken) break
+          const d = await res.json()
+          if (d.elements?.length > 0) {
+            osmLoadingStep.value = `render อาคาร ${label}...`
+            await appendOSMBuildings(d.elements, lat, lng, z, token)
+          }
+          success = true
+          osmLoadingPct.value = 40 + (qi + 1) * 15
+        } catch (e) {
+          const wait = Math.min(attempt * 3000, 15000)
+          osmLoadingStep.value = `อาคาร ${label} error รอ ${wait / 1000}s...`
+          await new Promise(r => setTimeout(r, wait))
+        }
+      }
+    }
+    if (token === osmLoadToken) {
+      osmLoadingPct.value = 100
+      osmLoadingStep.value = "โหลดอาคารครบแล้ว ✓"
+      await new Promise(r => setTimeout(r, 1200))
+    }
   } catch (err: any) {
     console.warn("OSM 3D load failed:", err?.message)
+    osmLoadingStep.value = "โหลดล้มเหลว"
   } finally {
-    if (token === osmLoadToken) osmBuilding3dLoading.value = false
+    if (token === osmLoadToken) {
+      osmBuilding3dLoading.value = false
+      osmLoadingPct.value = 0
+      osmLoadingStep.value = ""
+    }
   }
 }
 
@@ -1781,7 +2825,7 @@ function updateMapDrag(clientX: number, clientY: number) {
   const dz = p.z - mapDragStartPoint.z
   if (Math.abs(dx) > 0.02 || Math.abs(dz) > 0.02) mapDragMoved = true
 
-  const z = Math.max(14, Math.min(19, Math.round(mapZoom.value)))
+  const z = Math.max(1, Math.min(20, Math.round(mapZoom.value)))
   const unitsPerTile = MAP_SURFACE_SIZE / MAP_TILE_SPAN
   const n = 2 ** z
   const shiftX = dx / unitsPerTile
@@ -1846,7 +2890,7 @@ async function applyMapSearchResult(item: { display: string; lat: number; lng: n
   const prev = { lat: mapLat.value, lng: mapLng.value, zoom: mapZoom.value }
   mapLat.value = item.lat
   mapLng.value = item.lng
-  mapZoom.value = Math.max(mapZoom.value, 16)
+  // no zoom clamp on search
   mapSearchResults.value = []
   mapSearchError.value = ""
   await applyMapLocation({ anchorFrom: prev })
@@ -2636,6 +3680,17 @@ function onViewportPointerDown(e: PointerEvent) {
   if (e.button !== 0) return
   activePointerId = e.pointerId
   renderer?.domElement?.setPointerCapture?.(e.pointerId)
+  // ── Water Pipe Tool ──
+  if (wpToolOpen.value) {
+    e.preventDefault()
+    if (wpToolMode.value === 'pipe') {
+      startWPDraw(e.clientX, e.clientY)
+      pointerDownMoved = true
+    } else {
+      placeWPNode(e.clientX, e.clientY)
+    }
+    return
+  }
   if (roadToolActive.value) {
     e.preventDefault()
     const started = startRoadDrawing(e.clientX, e.clientY)
@@ -2668,6 +3723,11 @@ function onViewportPointerDown(e: PointerEvent) {
 
 function onViewportPointerMove(e: PointerEvent) {
   if (activePointerId != null && e.pointerId !== activePointerId) return
+  if (wpDrawing) {
+    pointerDownMoved = true
+    updateWPDraw(e.clientX, e.clientY)
+    return
+  }
   if (roadDrawing) {
     pointerDownMoved = true
     updateRoadDrawing(e.clientX, e.clientY)
@@ -2697,6 +3757,10 @@ async function onViewportPointerUp(e: PointerEvent) {
   if (activePointerId != null && e.pointerId !== activePointerId) return
   renderer?.domElement?.releasePointerCapture?.(e.pointerId)
   activePointerId = null
+  if (wpDrawing) {
+    stopWPDraw(true)
+    return
+  }
   if (roadDrawing) {
     stopRoadDrawing(true)
     return
@@ -2728,6 +3792,7 @@ async function onViewportPointerUp(e: PointerEvent) {
 
 function onViewportPointerCancel() {
   activePointerId = null
+  if (wpDrawing) stopWPDraw(false)
   if (roadDrawing) stopRoadDrawing(false)
   if (draggingModelId != null) endModelDrag()
   if (draggingLightId != null) endLightDrag()
@@ -3589,12 +4654,22 @@ function buildProjectPayload() {
     },
   }))
 
+  const cctv = {
+    cameras: cctvCameras.value.map(c => ({ id: c.id, name: c.name, url: c.url })),
+    markers: cctvMarkers.value.map(m => ({ id: m.id, cameraId: m.cameraId, worldX: m.worldX, worldY: m.worldY, worldZ: m.worldZ })),
+  }
+
+  const waterPipeDrawings = {
+    pipes: wpUserPipes.value.map(p => ({ id: p.id, pts: p.pts, diam: p.diam, mat: p.mat, status: p.status, label: p.label, midX: p.midX, midZ: p.midZ })),
+    nodes: wpUserNodes.value.map(n => ({ id: n.id, type: n.type, x: n.x, z: n.z })),
+  }
+
   return {
     version: 1,
     map: {
       lat: roundNumber(mapLat.value, 6),
       lng: roundNumber(mapLng.value, 6),
-      zoom: Math.max(14, Math.min(19, Math.round(mapZoom.value))),
+      zoom: Math.max(1, Math.min(20, Math.round(mapZoom.value))),
     },
     viewer: {
       wallTransparentOn: !!wallTransparentOn.value,
@@ -3603,6 +4678,8 @@ function buildProjectPayload() {
     models,
     roads,
     lights,
+    cctv,
+    waterPipeDrawings,
     savedAt: new Date().toISOString(),
   }
 }
@@ -3726,9 +4803,10 @@ async function saveProjectToSupabase() {
   projectDeleteError.value = ""
   projectDeleteSuccess.value = ""
 
-  // ตรวจสอบ DEMO quota
-  if (isDemoUser.value && savedProjects.value.length >= 1) {
-    projectSaveError.value = 'ไลเซนส์ DEMO บันทึกได้สูงสุด 1 โปรเจค — กรุณาลบโปรเจคเดิมก่อน'
+  // ตรวจสอบ quota (DEMO / 7 วัน)
+  if (isLimitedUser.value && savedProjects.value.length >= 1) {
+    const licType = is7DayUser.value ? '7 วัน' : 'DEMO'
+    projectSaveError.value = `ไลเซนส์ ${licType} บันทึกได้สูงสุด 1 โปรเจค — กรุณาลบโปรเจคเดิมก่อน`
     return
   }
 
@@ -3740,8 +4818,7 @@ async function saveProjectToSupabase() {
     const name = customName || fallbackName
     projectName.value = name
 
-    const { data: userData } = await $supabase.auth.getUser()
-    const ownerId = userData?.user?.id ?? null
+    const ownerId = authUser.value?.id ?? null
     const payload = buildProjectPayload()
     if (pickedSourceFiles.value.length) statusText.value = "Uploading model files to Supabase Storage..."
     const assets = await uploadSourceFilesToStorage(ownerId, loadedProjectAssets.value)
@@ -3785,6 +4862,7 @@ async function fetchSavedProjects() {
     const { data, error } = await $supabase
       .from("digital_twin_projects")
       .select("id,name,created_at,owner_id")
+      .eq("owner_id", authUser.value?.id)
       .order("created_at", { ascending: false })
       .limit(50)
     if (error) throw error
@@ -3964,6 +5042,48 @@ async function applyLoadedProjectPayload(payload: any) {
     dayMode.value = normalizedPayload.viewer.dayMode
     applyDayNightMode()
   }
+
+  // Restore CCTV cameras and markers
+  const savedCctv = normalizedPayload?.cctv
+  if (savedCctv) {
+    cctvCameras.value = []
+    cctvMarkers.value = []
+    cctvIdSeed = 1
+    cctvMarkerIdSeed = 1
+    const savedCams = Array.isArray(savedCctv.cameras) ? savedCctv.cameras : []
+    for (const c of savedCams) {
+      if (!c?.url) continue
+      const id = Number(c.id) || cctvIdSeed
+      cctvCameras.value.push({ id, name: String(c.name || `Camera ${id}`), url: String(c.url) })
+      if (id >= cctvIdSeed) cctvIdSeed = id + 1
+    }
+    const savedMarkers = Array.isArray(savedCctv.markers) ? savedCctv.markers : []
+    for (const m of savedMarkers) {
+      if (!Number.isFinite(Number(m?.worldX))) continue
+      const id = Number(m.id) || cctvMarkerIdSeed
+      cctvMarkers.value.push({ id, cameraId: Number(m.cameraId), worldX: Number(m.worldX), worldY: Number(m.worldY), worldZ: Number(m.worldZ) })
+      if (id >= cctvMarkerIdSeed) cctvMarkerIdSeed = id + 1
+    }
+  }
+
+  // Restore user-drawn water pipe drawings
+  const savedWP = normalizedPayload?.waterPipeDrawings
+  if (savedWP) {
+    clearWPUser()
+    const savedPipes = Array.isArray(savedWP.pipes) ? savedWP.pipes : []
+    for (const p of savedPipes) {
+      const pts = Array.isArray(p?.pts) ? p.pts : []
+      if (pts.length < 2) continue
+      wpUserPipes.value.push({ id: String(p.id), pts, diam: Number(p.diam) || 150, mat: String(p.mat || 'pvc'), status: String(p.status || 'normal'), label: String(p.label || ''), midX: Number(p.midX) || 0, midZ: Number(p.midZ) || 0 })
+    }
+    const savedNodes = Array.isArray(savedWP.nodes) ? savedWP.nodes : []
+    for (const n of savedNodes) {
+      if (!Number.isFinite(Number(n?.x))) continue
+      wpUserNodes.value.push({ id: String(n.id), type: n.type as any, x: Number(n.x), z: Number(n.z) })
+    }
+    rebuildWPUserGroup()
+  }
+
   reconcileModelEntitiesFromScene()
   if (modelApplied > 0) frameAllModels()
 }
@@ -4139,90 +5259,27 @@ onBeforeUnmount(() => {
   <main class="page" :class="{ 'night-mode': !dayMode }">
     <div ref="viewport" class="viewport" @dragover="onViewportDragOver" @drop="onViewportDrop"></div>
 
-    <!-- ── PM2.5 Panel (Top-Left, IQAir style) ── -->
-    <Transition name="panel-slide">
-      <div v-if="pm25PanelOpen && viewerReady" class="pm25-panel" style="cursor:pointer" @click="loadPm25Detail">
-
-        <!-- Close button -->
-        <button class="pm25-close-btn" @click="pm25PanelOpen = false" title="ปิด">
-          <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="2.5" y1="2.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="2.5" x2="2.5" y2="7.5"/></svg>
-        </button>
-
-        <!-- Loading -->
-        <div v-if="pm25Loading" class="pm25-loading-row">
-          <svg class="ls-spin" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" :stroke="pm25AqiColor(null)" style="width:15px;height:15px">
-            <circle cx="8" cy="8" r="6" stroke-dasharray="24 14"/>
-          </svg>
-          <span>กำลังโหลดข้อมูล...</span>
-        </div>
-
-        <!-- No data / Error -->
-        <div v-else-if="!pm25Stations.length" class="pm25-nodata">
-          <span>{{ pm25Error || 'ไม่พบข้อมูลในพื้นที่นี้' }}</span>
-          <button class="pm25-refresh-btn" style="width:auto;padding:0 12px;font-size:0.6rem" @click="loadPm25">ลองใหม่</button>
-        </div>
-
-        <!-- Main IQAir-style content -->
-        <template v-else>
-          <!-- Top row: AQI box (left) + face icon (right) -->
-          <div class="pm25-top-row">
-            <div class="pm25-left">
-              <div class="pm25-aqi-box" :style="{ background: pm25AqiBoxBg(pm25Avg()), color: pm25AqiColor(pm25Avg()) }">
-                <div class="pm25-aqi-num">{{ pm25Avg() ?? '-' }}</div>
-                <div class="pm25-aqi-label">US AQI</div>
-              </div>
-              <div class="pm25-level-text" :style="{ color: pm25AqiColor(pm25Avg()) }">{{ pm25LevelLabel(pm25Avg()) }}</div>
-            </div>
-            <div class="pm25-label-big" :style="{ color: pm25AqiColor(pm25Avg()) }">PM2.5</div>
-          </div>
-
-          <!-- PM2.5 concentration row -->
-          <div class="pm25-pollutant-row" :style="{ color: pm25AqiColor(pm25Avg()) }">
-            <svg viewBox="0 0 12 12" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.5" stroke-linecap="round" style="width:10px;height:10px;flex-shrink:0">
-              <path d="M2 6h5M2 3h8M2 9h4"/><circle cx="10" cy="9" r="1.5"/>
-            </svg>
-            <span>สารมลพิษหลัก: PM2.5 <strong>{{ pm25Pm25Avg() ?? '-' }}</strong> µg/m³</span>
-          </div>
-
-          <!-- Weather row -->
-          <div class="pm25-weather-row" :style="{ color: pm25AqiColor(pm25Avg()) }">
-            <span v-if="pm25Weather.temp !== null" class="pm25-wx-item">
-              <svg viewBox="0 0 12 20" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.6" stroke-linecap="round" style="width:7px;height:11px">
-                <rect x="4" y="1" width="4" height="11" rx="2"/><circle cx="6" cy="16" r="3" :fill="pm25AqiColor(pm25Avg())" stroke="none"/>
-              </svg>
-              {{ pm25Weather.temp }}°C
-            </span>
-            <span v-if="pm25Weather.wind !== null" class="pm25-wx-item">
-              <svg viewBox="0 0 12 12" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.5" stroke-linecap="round" style="width:9px;height:9px">
-                <path d="M2 5h7a1.5 1.5 0 000-3h-1"/><path d="M2 8h5a1.5 1.5 0 011.5 1.5"/>
-              </svg>
-              {{ pm25Weather.wind }} km/h
-            </span>
-            <span v-if="pm25Weather.humidity !== null" class="pm25-wx-item">
-              <svg viewBox="0 0 12 14" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.5" stroke-linecap="round" style="width:8px;height:9px">
-                <path d="M6 1L3 7a3 3 0 006 0L6 1z"/>
-              </svg>
-              {{ pm25Weather.humidity }}%
-            </span>
-          </div>
-
-          <!-- Footer: location name + refresh -->
-          <div class="pm25-footer-row" :style="{ borderColor: pm25AqiColor(pm25Avg())+'30' }">
-            <span class="pm25-station-name" :style="{ color: pm25AqiColor(pm25Avg()) }">
-              <svg viewBox="0 0 12 16" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.5" stroke-linecap="round" style="width:8px;height:10px;flex-shrink:0">
-                <path d="M6 1C3.8 1 2 2.8 2 5c0 3 4 9 4 9s4-6 4-9c0-2.2-1.8-4-4-4z"/><circle cx="6" cy="5" r="1.5" :fill="pm25AqiColor(pm25Avg())" stroke="none"/>
-              </svg>
-              {{ pm25LocationName || 'กำลังระบุตำแหน่ง...' }}
-            </span>
-            <button class="pm25-refresh-btn" @click="loadPm25" :disabled="pm25Loading" :style="{ borderColor: pm25AqiColor(pm25Avg())+'40' }" :title="'อัปเดต ' + pm25LastUpdate">
-              <svg viewBox="0 0 14 14" fill="none" :stroke="pm25AqiColor(pm25Avg())" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:10px;height:10px">
-                <path d="M2 7a5 5 0 105-5H4M4 2v3H1"/>
-              </svg>
-            </button>
-          </div>
-        </template>
-      </div>
-    </Transition>
+    <!-- ── Compass ── -->
+    <div class="map-compass" :title="`ทิศเหนือ ${compassAngle.toFixed(0)}°`">
+      <svg viewBox="0 0 64 64" width="64" height="64">
+        <!-- outer ring -->
+        <circle cx="32" cy="32" r="30" fill="rgba(10,15,30,0.72)" stroke="rgba(148,163,184,0.25)" stroke-width="1.2"/>
+        <!-- cardinal labels (fixed, don't rotate) -->
+        <text x="32" y="10" text-anchor="middle" dominant-baseline="middle" font-size="8" font-weight="700" fill="#94a3b8" font-family="sans-serif">N</text>
+        <text x="32" y="56" text-anchor="middle" dominant-baseline="middle" font-size="7" fill="#475569" font-family="sans-serif">S</text>
+        <text x="10" y="33" text-anchor="middle" dominant-baseline="middle" font-size="7" fill="#475569" font-family="sans-serif">W</text>
+        <text x="54" y="33" text-anchor="middle" dominant-baseline="middle" font-size="7" fill="#475569" font-family="sans-serif">E</text>
+        <!-- rotating needle group -->
+        <g :transform="`rotate(${compassAngle}, 32, 32)`">
+          <!-- North arrow (red) -->
+          <polygon points="32,6 29,32 35,32" fill="#ef4444"/>
+          <!-- South arrow (gray) -->
+          <polygon points="32,58 29,32 35,32" fill="#475569"/>
+          <!-- center dot -->
+          <circle cx="32" cy="32" r="2.8" fill="#1e293b" stroke="#94a3b8" stroke-width="1"/>
+        </g>
+      </svg>
+    </div>
 
     <!-- ── PM2.5 Detail Modal ── -->
     <Transition name="fade">
@@ -4407,14 +5464,15 @@ onBeforeUnmount(() => {
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="12" height="12" rx="1.5"/><line x1="4" y1="7" x2="4" y2="10"/><line x1="7" y1="5" x2="7" y2="10"/><line x1="10" y1="3" x2="10" y2="10"/></svg>
           Project
         </button>
-        <button type="button" class="bb-tab" :class="{ 'bbtab-active': panelTrafficOpen }" @click="panelTrafficOpen = !panelTrafficOpen">
+        <button type="button" class="bb-tab" :class="{ 'bbtab-active': trafficVisible }" @click="toggleTrafficLayer">
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 7h10M2 4.5h10M2 9.5h10"/>
             <circle cx="5"  cy="4.5" r="1.1" fill="#22c55e" stroke="none"/>
             <circle cx="9"  cy="7"   r="1.1" fill="#f59e0b" stroke="none"/>
             <circle cx="5"  cy="9.5" r="1.1" fill="#ef4444" stroke="none"/>
           </svg>
-          Traffic<span v-if="trafficVisible" class="bbtab-badge" style="background:#22c55e">ON</span>
+          Traffic<span v-if="trafficLoading" class="bbtab-badge" style="background:#888">...</span>
+          <span v-else-if="trafficVisible" class="bbtab-badge" style="background:#22c55e">ON</span>
         </button>
         <button type="button" class="bb-tab" :class="{ 'bbtab-active': showCctvPanel }" @click="showCctvPanel = !showCctvPanel">
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -4424,11 +5482,40 @@ onBeforeUnmount(() => {
           </svg>
           CCTV<span v-if="cctvMarkers.length" class="bbtab-badge">{{ cctvMarkers.length }}</span>
         </button>
-        <button type="button" class="bb-tab" :class="{ 'bbtab-active': panelWaterOpen }" @click="panelWaterOpen = !panelWaterOpen">
+        <button type="button" class="bb-tab" :class="{ 'bbtab-active': waterVisible }" @click="toggleWaterLayer()">
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M7 2C7 2 3 6 3 8.5a4 4 0 0 0 8 0C11 6 7 2 7 2z"/>
           </svg>
           น้ำ<span v-if="waterVisible" class="bbtab-badge" style="background:#0ea5e9">ON</span>
+        </button>
+        <button type="button" class="bb-tab" :class="{ 'bbtab-active': showWaterSupplyPanel }" @click="showWaterSupplyPanel = !showWaterSupplyPanel">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="4" cy="7" r="2"/><circle cx="10" cy="7" r="2"/>
+            <path d="M6 7h2M2 7H1M13 7h-1"/>
+            <path d="M4 5V3M10 5V3M4 9v2M10 9v2"/>
+          </svg>
+          ประปา<span v-if="wpUserPipes.length || wpUserNodes.length" class="bbtab-badge" style="background:#00ccff">{{ wpUserPipes.length + wpUserNodes.length }}</span>
+        </button>
+        <!-- PM2.5 AQI tab -->
+        <button type="button" class="bb-tab bb-tab-aqi" @click="loadPm25Detail" :disabled="!viewerReady" :title="pm25LocationName || 'คลิกดูรายละเอียดคุณภาพอากาศ'">
+          <span v-if="pm25Loading" class="bb-aqi-spinner"></span>
+          <span v-else class="bb-aqi-box" :style="{ background: pm25AqiBoxBg(pm25Avg()), color: pm25AqiColor(pm25Avg()) }">
+            {{ pm25Avg() ?? '—' }}
+          </span>
+          <span class="bb-aqi-label" :style="pm25Stations.length ? { color: pm25AqiColor(pm25Avg()) } : {}">PM2.5</span>
+        </button>
+
+        <button type="button" class="bb-tab" :class="{ 'bbtab-active': tambonVisible }" @click="toggleTambonLayer">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="7,1 13,5 11,12 3,12 1,5" fill="none"/>
+            <line x1="7" y1="1" x2="7" y2="12"/>
+            <line x1="1" y1="5" x2="13" y2="5"/>
+            <line x1="3" y1="12" x2="11" y2="12"/>
+          </svg>
+          เขต อบต.<span v-if="tambonLoading" class="bbtab-badge" style="background:#888">...</span>
+          <span v-else-if="tambonError" class="bbtab-badge" style="background:#ef4444" :title="tambonError">ERR</span>
+          <span v-else-if="tambonVisible && tambonAreas.length" class="bbtab-badge" style="background:#ffcc00;color:#333">{{ tambonAreas.length }}</span>
+          <span v-else-if="tambonVisible" class="bbtab-badge" style="background:#f59e0b;color:#333">ON</span>
         </button>
       </div>
 
@@ -4469,6 +5556,14 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" class="bb-act" :disabled="!viewerReady" @click="resetView" title="Reset View">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 105-5H5M5 2v3H2"/></svg>
+        </button>
+        <button type="button" class="bb-act" @click="tourRef?.start()" title="คู่มือการใช้งาน"
+          style="color:#00ccff;border-color:rgba(0,204,255,0.3);background:rgba(0,204,255,0.07)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="8" cy="8" r="6.5"/>
+            <path d="M8 11v-1M8 7.5a1.5 1.5 0 10-1.5-1.5"/>
+            <circle cx="8" cy="11.2" r=".3" fill="currentColor"/>
+          </svg>
         </button>
 
         <!-- User / Admin -->
@@ -4626,62 +5721,246 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
+
     <!-- ── Water Markers (fixed screen pos) ── -->
     <template v-if="waterVisible">
       <div v-for="pos in waterScreenPos" :key="'wm-'+pos.id"
            v-show="pos.visible"
-           :style="{ position:'fixed', left: pos.x+'px', top: pos.y+'px', transform:'translate(-50%,-100%)', zIndex:400, cursor:'pointer' }"
-           @click="selectedWater = selectedWater?.id === pos.id ? null : pos.source">
-        <!-- Popup card -->
-        <div class="wmap-card" :class="{ 'wmap-card-active': selectedWater?.id === pos.id }">
-          <!-- Header row -->
-          <div class="wmap-header">
-            <svg viewBox="0 0 12 12" fill="#0ea5e9" style="width:11px;height:11px;flex-shrink:0">
-              <path d="M6 1C6 1 2 5 2 7.5a4 4 0 0 0 8 0C10 5 6 1 6 1z"/>
-            </svg>
-            <span class="wmap-name">{{ pos.source.name || 'แหล่งน้ำ' }}</span>
-          </div>
-          <!-- % bar if available -->
-          <template v-if="pos.source.pct != null">
-            <div class="wmap-bar-row">
-              <div class="wmap-bar-track">
-                <div class="wmap-bar-fill"
-                  :style="{ width: pos.source.pct + '%', background: pos.source.pct >= 70 ? '#22c55e' : pos.source.pct >= 30 ? '#f59e0b' : '#ef4444' }">
-                </div>
-              </div>
-              <span class="wmap-pct"
-                :style="{ color: pos.source.pct >= 70 ? '#22c55e' : pos.source.pct >= 30 ? '#f59e0b' : '#ef4444' }">
-                {{ pos.source.pct.toFixed(1) }}%
-              </span>
-            </div>
-          </template>
-          <!-- Expanded detail on click -->
-          <template v-if="selectedWater?.id === pos.id">
-            <div class="wmap-detail">
-              <div v-if="pos.source.province"    class="wmap-drow"><span>จังหวัด</span><span>{{ pos.source.province }}</span></div>
-              <div v-if="pos.source.levelM"      class="wmap-drow"><span>ระดับน้ำ</span><span>{{ pos.source.levelM.toFixed(2) }} ม.</span></div>
-              <div v-if="pos.source.storedMCM"   class="wmap-drow"><span>ปริมาณน้ำ</span><span>{{ pos.source.storedMCM.toFixed(1) }} ล้าน ม³</span></div>
-              <div v-if="pos.source.capacityMCM" class="wmap-drow"><span>ความจุ</span><span>{{ pos.source.capacityMCM.toFixed(1) }} ล้าน ม³</span></div>
-              <div v-if="pos.source.inflowMCM"   class="wmap-drow"><span>น้ำไหลเข้า</span><span>{{ pos.source.inflowMCM.toFixed(2) }} ล้าน ม³</span></div>
-              <div v-if="pos.source.releasedMCM" class="wmap-drow"><span>น้ำระบาย</span><span>{{ pos.source.releasedMCM.toFixed(2) }} ล้าน ม³</span></div>
-              <div class="wmap-drow"><span>ประเภท</span><span>{{ pos.source.type }}</span></div>
-              <div v-if="!pos.source.levelM && !pos.source.storedMCM && pos.source.pct == null"
-                   class="wmap-nodata">ข้อมูล: OpenStreetMap</div>
-            </div>
-          </template>
-          <!-- Arrow -->
-          <div class="wmap-arrow"></div>
+           :style="{ position:'fixed', left: pos.x+'px', top: pos.y+'px', transform:'translate(-50%,-50%)', zIndex: selectedWater?.id === pos.id ? 420 : 400, cursor:'pointer' }"
+           @click.stop="selectedWater = selectedWater?.id === pos.id ? null : pos.source">
+        <!-- Pin icon -->
+        <div class="wpin" :class="{ 'wpin-active': selectedWater?.id === pos.id }">
+          <svg viewBox="0 0 18 22" width="18" height="22">
+            <path d="M9 0C5.13 0 2 3.13 2 7c0 5.25 7 15 7 15s7-9.75 7-15c0-3.87-3.13-7-7-7z" fill="currentColor"/>
+            <circle cx="9" cy="7" r="2.5" fill="rgba(0,0,0,0.25)"/>
+          </svg>
         </div>
+        <!-- Popup: เฉพาะตัวที่ถูกเลือก -->
+        <Transition name="wfade">
+          <div v-if="selectedWater?.id === pos.id" class="wmap-popup">
+            <button class="wmap-popup-close" @click.stop="selectedWater = null">✕</button>
+            <div class="wmap-popup-title">
+              <svg viewBox="0 0 12 12" fill="#38bdf8" width="11" height="11"><path d="M6 1C6 1 2 5 2 7.5a4 4 0 0 0 8 0C10 5 6 1 6 1z"/></svg>
+              {{ pos.source.name || 'แหล่งน้ำ' }}
+            </div>
+            <template v-if="pos.source.pct != null">
+              <div class="wmap-popup-bar-row">
+                <div class="wmap-popup-bar-track">
+                  <div class="wmap-popup-bar-fill"
+                    :style="{ width: pos.source.pct + '%', background: pos.source.pct >= 70 ? '#22c55e' : pos.source.pct >= 30 ? '#f59e0b' : '#ef4444' }"/>
+                </div>
+                <span :style="{ color: pos.source.pct >= 70 ? '#22c55e' : pos.source.pct >= 30 ? '#f59e0b' : '#ef4444', fontWeight:800, fontSize:'0.65rem' }">
+                  {{ pos.source.pct.toFixed(1) }}%
+                </span>
+              </div>
+            </template>
+            <div class="wmap-popup-rows">
+              <div v-if="pos.source.province"    class="wmap-popup-row"><span>จังหวัด</span><span>{{ pos.source.province }}</span></div>
+              <div v-if="pos.source.levelM"      class="wmap-popup-row"><span>ระดับน้ำ</span><span>{{ pos.source.levelM.toFixed(2) }} ม.</span></div>
+              <div v-if="pos.source.storedMCM"   class="wmap-popup-row"><span>ปริมาณน้ำ</span><span>{{ pos.source.storedMCM.toFixed(1) }} ล้าน ม³</span></div>
+              <div v-if="pos.source.capacityMCM" class="wmap-popup-row"><span>ความจุ</span><span>{{ pos.source.capacityMCM.toFixed(1) }} ล้าน ม³</span></div>
+              <div v-if="pos.source.inflowMCM"   class="wmap-popup-row"><span>น้ำไหลเข้า</span><span>{{ pos.source.inflowMCM.toFixed(2) }} ล้าน ม³</span></div>
+              <div v-if="pos.source.releasedMCM" class="wmap-popup-row"><span>น้ำระบาย</span><span>{{ pos.source.releasedMCM.toFixed(2) }} ล้าน ม³</span></div>
+              <div class="wmap-popup-row"><span>ประเภท</span><span>{{ pos.source.type }}</span></div>
+            </div>
+            <div class="wmap-popup-arrow"></div>
+          </div>
+        </Transition>
       </div>
     </template>
 
+
     <!-- ── OSM 3D Loading Toast ── -->
     <Transition name="panel-slide">
-      <div v-if="osmBuilding3dLoading" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:600;display:flex;align-items:center;gap:8px;background:rgba(2,5,13,.82);backdrop-filter:blur(10px);border:1px solid rgba(56,189,248,.25);border-radius:20px;padding:7px 16px;color:#38bdf8;font-size:12px;letter-spacing:.04em;pointer-events:none">
-        <span class="loading-dot"></span>
-        กำลังโหลดโมเดลอาคาร 3D...
+      <div v-if="osmBuilding3dLoading" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:600;min-width:280px;background:rgba(2,5,13,.88);backdrop-filter:blur(10px);border:1px solid rgba(56,189,248,.25);border-radius:14px;padding:10px 16px;color:#e2e8f0;font-size:12px;pointer-events:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span class="loading-dot"></span>
+            <span style="color:#38bdf8;font-weight:600">โหลดอาคาร 3D</span>
+          </div>
+          <span style="color:#38bdf8;font-weight:700;font-size:13px">{{ osmLoadingPct }}%</span>
+        </div>
+        <div style="background:rgba(255,255,255,.1);border-radius:4px;height:4px;overflow:hidden;margin-bottom:6px">
+          <div :style="{ width: osmLoadingPct + '%', background: osmLoadingPct === 100 ? '#22c55e' : '#38bdf8', height: '100%', borderRadius: '4px', transition: 'width .4s ease' }"></div>
+        </div>
+        <div style="color:#94a3b8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ osmLoadingStep }}</div>
       </div>
     </Transition>
+
+    <!-- ── Water Pipe Drawing Tool Panel ── -->
+    <Transition name="panel-slide">
+      <div v-if="wpToolOpen" class="wpt-panel">
+        <div class="wpt-header">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="width:13px;height:13px;color:#00ccff">
+            <path d="M2 12L12 2M5 2h7v7"/>
+          </svg>
+          <span>เครื่องมือวางท่อประปา</span>
+          <button class="wpt-close" @click="wpToolOpen=false; stopWPDraw(false)">✕</button>
+        </div>
+
+        <!-- Mode selector -->
+        <div class="wpt-modes">
+          <button v-for="m in [{id:'pipe',icon:'━',label:'ท่อ'},{id:'valve',icon:'✕',label:'วาล์ว'},{id:'hydrant',icon:'✚',label:'หัวดับเพลิง'},{id:'meter',icon:'●',label:'มิเตอร์'}]"
+            :key="m.id" class="wpt-mode-btn" :class="{active: wpToolMode===m.id}"
+            @click="wpToolMode=(m.id as any); stopWPDraw(false)">
+            <span class="wpt-mode-icon">{{ m.icon }}</span>
+            <span>{{ m.label }}</span>
+          </button>
+        </div>
+
+        <!-- Pipe props (show when mode=pipe) -->
+        <template v-if="wpToolMode==='pipe'">
+          <div class="wpt-row">
+            <label class="wpt-label">ขนาดท่อ</label>
+            <select v-model.number="wpToolDiam" class="wpt-select">
+              <option :value="100">4" (100mm)</option>
+              <option :value="150">6" (150mm)</option>
+              <option :value="200">8" (200mm)</option>
+              <option :value="250">10" (250mm)</option>
+              <option :value="300">12" (300mm)</option>
+              <option :value="400">16" (400mm)</option>
+              <option :value="500">20" (500mm)</option>
+              <option :value="600">24" (600mm)</option>
+            </select>
+          </div>
+          <div class="wpt-row">
+            <label class="wpt-label">วัสดุ</label>
+            <select v-model="wpToolMat" class="wpt-select">
+              <option value="pvc">PVC (CAS)</option>
+              <option value="ductile_iron">Ductile Iron (DIP)</option>
+              <option value="hdpe">HDPE</option>
+              <option value="steel">Steel (STL)</option>
+            </select>
+          </div>
+          <div class="wpt-row">
+            <label class="wpt-label">สถานะ</label>
+            <select v-model="wpToolStatus" class="wpt-select">
+              <option value="normal">ปกติ</option>
+              <option value="leaking">รั่ว ⚠️</option>
+              <option value="blocked">อุดตัน 🔴</option>
+            </select>
+          </div>
+        </template>
+
+        <!-- HUD hint -->
+        <div class="wpt-hint">
+          <template v-if="wpToolMode==='pipe'">👆 คลิกค้าง-ลากบนแผนที่เพื่อวางท่อ</template>
+          <template v-else-if="wpToolMode==='valve'">👆 คลิกบนแผนที่เพื่อวางวาล์ว</template>
+          <template v-else-if="wpToolMode==='hydrant'">👆 คลิกเพื่อวางหัวดับเพลิง</template>
+          <template v-else>👆 คลิกเพื่อวางมิเตอร์น้ำ</template>
+        </div>
+
+        <!-- Stats + Actions -->
+        <div class="wpt-stats">
+          <span>ท่อ <strong>{{ wpUserPipes.length }}</strong></span>
+          <span>·</span>
+          <span>Node <strong>{{ wpUserNodes.length }}</strong></span>
+        </div>
+        <div class="wpt-actions">
+          <button class="wpt-btn wpt-undo" :disabled="!wpUserPipes.length && !wpUserNodes.length" @click="undoWPLast">↩ Undo</button>
+          <button class="wpt-btn wpt-clear" :disabled="!wpUserPipes.length && !wpUserNodes.length" @click="clearWPUser">🗑 ล้าง</button>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ── Water Supply Panel (ประปา) ── -->
+    <Transition name="panel-slide">
+      <div v-if="showWaterSupplyPanel" class="wsp-panel">
+        <div class="wpt-header">
+          <svg viewBox="0 0 14 14" fill="none" stroke="#00ccff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;flex-shrink:0">
+            <circle cx="4" cy="7" r="2"/><circle cx="10" cy="7" r="2"/>
+            <path d="M6 7h2M2 7H1M13 7h-1M4 5V3M10 5V3M4 9v2M10 9v2"/>
+          </svg>
+          <span>ระบบประปา</span>
+          <button class="wpt-close" @click="showWaterSupplyPanel=false">✕</button>
+        </div>
+
+        <!-- Summary -->
+        <div class="wsp-summary">
+          <div class="wsp-stat">
+            <div class="wsp-stat-val">{{ wpUserPipes.length }}</div>
+            <div class="wsp-stat-lbl">ท่อ</div>
+          </div>
+          <div class="wsp-stat">
+            <div class="wsp-stat-val">{{ wpUserNodes.filter(n=>n.type==='valve').length }}</div>
+            <div class="wsp-stat-lbl">วาล์ว</div>
+          </div>
+          <div class="wsp-stat">
+            <div class="wsp-stat-val">{{ wpUserNodes.filter(n=>n.type==='hydrant').length }}</div>
+            <div class="wsp-stat-lbl">หัวดับเพลิง</div>
+          </div>
+          <div class="wsp-stat">
+            <div class="wsp-stat-val">{{ wpUserNodes.filter(n=>n.type==='meter').length }}</div>
+            <div class="wsp-stat-lbl">มิเตอร์</div>
+          </div>
+        </div>
+
+        <!-- Open drawing tool -->
+        <button class="wsp-tool-btn" @click="wpToolOpen = !wpToolOpen">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="width:12px;height:12px">
+            <path d="M2 12L12 2M5 2h7v7"/>
+          </svg>
+          {{ wpToolOpen ? 'ปิดเครื่องมือวางท่อ' : 'เปิดเครื่องมือวางท่อ' }}
+        </button>
+
+        <!-- Pipe list -->
+        <div v-if="wpUserPipes.length || wpUserNodes.length" class="wsp-list-title">รายการบนแผนที่</div>
+        <div v-if="!wpUserPipes.length && !wpUserNodes.length" class="wsp-empty">ยังไม่มีข้อมูลบนแผนที่<br><span>ใช้เครื่องมือวางท่อเพื่อเริ่มวาด</span></div>
+
+        <div v-if="wpUserPipes.length" class="wsp-list">
+          <div v-for="p in wpUserPipes" :key="p.id" class="wsp-item" :class="p.status">
+            <span class="wsp-item-icon">━</span>
+            <div class="wsp-item-info">
+              <span class="wsp-item-label">{{ p.label || p.id }}</span>
+              <span class="wsp-item-meta">{{ p.diam }}mm · {{ p.mat?.toUpperCase() }}</span>
+            </div>
+            <span class="wsp-item-status" :class="p.status">
+              {{ p.status==='leaking'?'รั่ว':p.status==='blocked'?'อุดตัน':'ปกติ' }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="wpUserNodes.length" class="wsp-list" style="margin-top:6px">
+          <div v-for="n in wpUserNodes" :key="n.id" class="wsp-item">
+            <span class="wsp-item-icon">{{ n.type==='valve'?'✕':n.type==='hydrant'?'✚':'●' }}</span>
+            <div class="wsp-item-info">
+              <span class="wsp-item-label">{{ n.type==='valve'?'วาล์ว':n.type==='hydrant'?'หัวดับเพลิง':'มิเตอร์' }}</span>
+              <span class="wsp-item-meta">{{ n.id }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="wpUserPipes.length || wpUserNodes.length" class="wpt-actions" style="margin-top:8px">
+          <button class="wpt-btn wpt-undo" :disabled="!wpUserPipes.length && !wpUserNodes.length" @click="undoWPLast">↩ Undo</button>
+          <button class="wpt-btn wpt-clear" :disabled="!wpUserPipes.length && !wpUserNodes.length" @click="clearWPUser">🗑 ล้าง</button>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ── WP User Pipe Labels ── -->
+    <template v-if="wpUserPipes.length">
+      <div v-for="pos in wpUserPipeScreen" :key="'wupl-'+pos.id" v-show="pos.visible"
+           :style="{ position:'fixed', left:pos.x+'px', top:pos.y+'px', transform:'translate(-50%,-50%)', zIndex:360, pointerEvents:'none' }">
+        <span class="wp-gis-label" :class="pos.pipe.status">{{ pos.pipe.label }}</span>
+      </div>
+    </template>
+    <!-- ── WP User Node Labels ── -->
+    <template v-if="wpUserNodes.length">
+      <div v-for="pos in wpUserNodeScreen" :key="'wunn-'+pos.id" v-show="pos.visible"
+           :style="{ position:'fixed', left:pos.x+'px', top:pos.y+'px', transform:'translate(-50%,-50%)', zIndex:370, pointerEvents:'none' }">
+        <span class="wpt-node-chip" :class="pos.node.type">
+          {{ pos.node.type==='valve'?'✕':pos.node.type==='hydrant'?'✚':'M' }}
+        </span>
+      </div>
+    </template>
+
+    <!-- ── อบต. Boundary Labels ── -->
+    <template v-if="tambonVisible && tambonLabelPos.length">
+      <div v-for="lbl in tambonLabelPos" :key="'tb-'+lbl.id" v-show="lbl.visible"
+           :style="{ position:'fixed', left:lbl.x+'px', top:lbl.y+'px', transform:'translate(-50%,-50%)', zIndex:280, pointerEvents:'none' }">
+        <span class="tambon-label">{{ lbl.name }}</span>
+      </div>
+    </template>
 
     <!-- ── Walk Person Drag Hint ── -->
     <div v-if="walkDragActive" class="walk-drop-hint">
@@ -4742,16 +6021,22 @@ onBeforeUnmount(() => {
           </div>
           <div class="coord-row">
             <span class="coord-label">ZOOM</span>
-            <input v-model.number="mapZoom" class="dt-input coord-val" type="number" min="14" max="19" step="1" />
+            <input v-model.number="mapZoom" class="dt-input coord-val" type="number" min="1" max="20" step="1" />
           </div>
         </div>
         <button type="button" class="apply-btn" @click="applyMapLocation">
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,7 7,2 12,7"/><line x1="7" y1="2" x2="7" y2="13"/></svg>
           Apply Map
         </button>
-        <div v-if="osmBuilding3dLoading" style="display:flex;align-items:center;gap:6px;margin-top:6px;color:#38bdf8;font-size:11px;opacity:.9">
-          <span class="loading-dot"></span>
-          <span>กำลังโหลดอาคาร 3D...</span>
+        <div v-if="osmBuilding3dLoading" style="margin-top:8px">
+          <div style="display:flex;justify-content:space-between;color:#38bdf8;font-size:11px;margin-bottom:3px">
+            <span style="display:flex;align-items:center;gap:5px"><span class="loading-dot"></span>อาคาร 3D</span>
+            <span style="font-weight:700">{{ osmLoadingPct }}%</span>
+          </div>
+          <div style="background:rgba(255,255,255,.12);border-radius:3px;height:3px;overflow:hidden">
+            <div :style="{ width: osmLoadingPct + '%', background: osmLoadingPct === 100 ? '#22c55e' : '#38bdf8', height: '100%', transition: 'width .4s ease' }"></div>
+          </div>
+          <div style="color:#64748b;font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ osmLoadingStep }}</div>
         </div>
         <p v-if="mapSearchError" class="err-text">{{ mapSearchError }}</p>
         <p class="attrib-text">© OpenStreetMap · CartoDB</p>
@@ -4830,13 +6115,13 @@ onBeforeUnmount(() => {
         <div class="stat-row"><span class="stat-label">Roads</span><span class="stat-val">{{ roadCount }}</span></div>
         <div v-if="loadedAssetCount" class="stat-row"><span class="stat-label">Assets</span><span class="stat-val">{{ loadedAssetCount }}</span></div>
         <div class="panel-section-label">SAVE / LOAD</div>
-        <div v-if="isDemoUser" style="display:flex;align-items:center;gap:5px;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:6px;padding:4px 8px;margin-bottom:4px">
-          <span style="font-size:9px;font-weight:700;background:#eab308;color:#000;padding:1px 5px;border-radius:3px">DEMO</span>
+        <div v-if="isLimitedUser" style="display:flex;align-items:center;gap:5px;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:6px;padding:4px 8px;margin-bottom:4px">
+          <span style="font-size:9px;font-weight:700;background:#eab308;color:#000;padding:1px 5px;border-radius:3px">{{ is7DayUser ? '7 วัน' : 'DEMO' }}</span>
           <span class="muted-text" style="font-size:0.6rem">บันทึกได้ {{ savedProjects.length }}/1 โปรเจค</span>
         </div>
         <label class="tr-row tr-row-2"><span>Name</span><input v-model.trim="projectName" class="dt-input" type="text" placeholder="Project name…" /></label>
         <div class="action-row">
-          <button type="button" class="apply-btn" style="flex:1" :disabled="savingProject || !viewerReady || (isDemoUser && savedProjects.length >= 1)" :title="isDemoUser && savedProjects.length >= 1 ? 'ไลเซนส์ DEMO บันทึกได้สูงสุด 1 โปรเจค' : ''" @click="saveProjectToSupabase">{{ savingProject ? "Saving…" : "💾 Save" }}</button>
+          <button type="button" class="apply-btn" style="flex:1" :disabled="savingProject || !viewerReady || (isLimitedUser && savedProjects.length >= 1)" :title="isLimitedUser && savedProjects.length >= 1 ? `ไลเซนส์ ${is7DayUser ? '7 วัน' : 'DEMO'} บันทึกได้สูงสุด 1 โปรเจค` : ''" @click="saveProjectToSupabase">{{ savingProject ? "Saving…" : "💾 Save" }}</button>
           <button type="button" class="mini-btn" :disabled="loadingProjects" @click="fetchSavedProjects">{{ loadingProjects ? "…" : "↺ Refresh" }}</button>
         </div>
         <div class="saved-project-list">
@@ -5189,6 +6474,8 @@ onBeforeUnmount(() => {
       @refresh="refreshAiMapBeta"
     />
 
+    <!-- ── Onboarding Tour ── -->
+    <OnboardingTour ref="tourRef" />
 
   </main>
 </template>
@@ -5445,6 +6732,22 @@ onBeforeUnmount(() => {
 .bb-act:hover  { background: var(--h-btn-hov); border-color: rgba(255,255,255,0.15); color: var(--h-pri); }
 .bb-act.active { background: var(--h-accent2); border-color: var(--h-accent); color: var(--h-accent); }
 .bb-act:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* PM2.5 AQI tab in bottom bar */
+.bb-tab-aqi { gap: 6px; }
+.bb-aqi-box {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 28px; height: 22px; padding: 0 5px;
+  border-radius: 5px; font-size: 0.65rem; font-weight: 800;
+  letter-spacing: 0.01em; flex-shrink: 0;
+}
+.bb-aqi-label { font-size: 0.62rem; font-weight: 700; }
+.bb-aqi-spinner {
+  display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.15); border-top-color: rgba(255,255,255,0.6);
+  animation: bb-spin 0.7s linear infinite; flex-shrink: 0;
+}
+@keyframes bb-spin { to { transform: rotate(360deg); } }
 
 /* ── Floating panels (above bottom bar) ──────────────── */
 .float-panel {
@@ -5876,37 +7179,58 @@ onBeforeUnmount(() => {
 .wsi-no-data { font-size: 0.57rem; color: var(--h-sec); opacity: .6; text-align: center; padding: 2px 0; }
 .water-marker { filter: drop-shadow(0 0 6px #0ea5e9); }
 
-/* Water map popup card */
-.wmap-card {
-  position: relative;
-  background: rgba(2,10,25,0.88);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(14,165,233,0.35);
+/* ── Water pin marker ── */
+.wpin {
+  color: #38bdf8;
+  filter: drop-shadow(0 1px 4px rgba(14,165,233,0.6));
+  transition: transform .15s, color .15s;
+  line-height: 0;
+}
+.wpin:hover { transform: scale(1.25); color: #7dd3fc; }
+.wpin-active { color: #0ea5e9; transform: scale(1.3); filter: drop-shadow(0 0 8px rgba(14,165,233,0.9)); }
+
+/* ── Water popup (shown only for selected) ── */
+.wmap-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(2,8,22,0.92);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(14,165,233,0.45);
   border-radius: 10px;
-  padding: 7px 10px 6px;
-  min-width: 130px; max-width: 200px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 12px rgba(14,165,233,0.15);
+  padding: 9px 12px 8px;
+  min-width: 160px; max-width: 220px;
+  box-shadow: 0 6px 28px rgba(0,0,0,0.6), 0 0 18px rgba(14,165,233,0.2);
   user-select: none;
-  transition: border-color .2s;
+  pointer-events: auto;
 }
-.wmap-card-active { border-color: rgba(14,165,233,0.7); box-shadow: 0 4px 24px rgba(0,0,0,.6), 0 0 20px rgba(14,165,233,.3); }
-.wmap-header { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
-.wmap-name { font-size: 0.64rem; font-weight: 700; color: #e0f2fe; line-height: 1.2; flex: 1; }
-.wmap-bar-row { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
-.wmap-bar-track { flex: 1; height: 4px; background: rgba(255,255,255,0.08); border-radius: 99px; overflow: hidden; }
-.wmap-bar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
-.wmap-pct { font-size: 0.62rem; font-weight: 800; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.wmap-detail { border-top: 1px solid rgba(14,165,233,0.15); margin-top: 5px; padding-top: 5px; display: flex; flex-direction: column; gap: 3px; }
-.wmap-drow { display: flex; justify-content: space-between; gap: 8px; font-size: 0.58rem; color: rgba(148,210,252,0.7); }
-.wmap-drow span:last-child { color: #e0f2fe; font-weight: 600; text-align: right; }
-.wmap-nodata { font-size: 0.57rem; color: rgba(148,210,252,0.5); text-align: center; padding: 2px 0; line-height: 1.5; }
-.wmap-arrow {
-  position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%);
+.wmap-popup-close {
+  position: absolute; top: 5px; right: 7px;
+  background: none; border: none; color: rgba(148,210,252,0.5);
+  font-size: 0.65rem; cursor: pointer; padding: 0; line-height: 1;
+}
+.wmap-popup-close:hover { color: #e0f2fe; }
+.wmap-popup-title {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 0.68rem; font-weight: 700; color: #e0f2fe;
+  padding-right: 14px; margin-bottom: 6px; line-height: 1.3;
+}
+.wmap-popup-bar-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.wmap-popup-bar-track { flex: 1; height: 5px; background: rgba(255,255,255,0.08); border-radius: 99px; overflow: hidden; }
+.wmap-popup-bar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
+.wmap-popup-rows { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid rgba(14,165,233,0.12); padding-top: 5px; }
+.wmap-popup-row { display: flex; justify-content: space-between; gap: 8px; font-size: 0.59rem; color: rgba(148,210,252,0.65); }
+.wmap-popup-row span:last-child { color: #bae6fd; font-weight: 600; text-align: right; }
+.wmap-popup-arrow {
+  position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
   width: 0; height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 7px solid rgba(14,165,233,0.35);
+  border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-top: 7px solid rgba(14,165,233,0.45);
 }
+/* Transition */
+.wfade-enter-active, .wfade-leave-active { transition: opacity .15s, transform .15s; }
+.wfade-enter-from, .wfade-leave-to { opacity: 0; transform: translateX(-50%) translateY(4px); }
 
 /* ── Walk drag button ── */
 .walk-drag-btn {
@@ -5917,6 +7241,214 @@ onBeforeUnmount(() => {
 .walk-dragging { background: var(--h-accent2) !important; border-color: var(--h-accent) !important; color: var(--h-accent) !important; }
 
 /* ── Walk drag drop hint ── */
+/* ── Water Pipe Layer ── */
+.fp-waterpipe { left: 50%; transform: translateX(-50%); width: min(290px, calc(100vw - 28px)); max-height: 72vh; overflow-y: auto; }
+.wp-node-list { display: flex; flex-direction: column; gap: 3px; }
+.wp-node-item { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 6px; background: rgba(0,200,255,0.06); border-left: 3px solid rgba(0,200,255,0.2); cursor: pointer; transition: background .15s; }
+.wp-node-item.warning { border-left-color: #e0a030; }
+.wp-node-item.critical { border-left-color: #e05050; background: rgba(224,80,80,0.07); }
+.wp-node-item:hover { background: rgba(0,200,255,0.12); }
+.wp-node-icon { font-size: 0.75rem; flex-shrink: 0; }
+.wp-node-info { flex: 1; min-width: 0; }
+.wp-node-name { font-size: 0.6rem; color: var(--h-pri); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wp-node-id { font-size: 0.55rem; color: var(--h-sec); }
+.wp-node-status { font-size: 0.55rem; padding: 2px 5px; border-radius: 4px; flex-shrink: 0; }
+.wp-node-status.normal   { background: rgba(34,197,94,0.15); color: #22c55e; }
+.wp-node-status.warning  { background: rgba(224,160,48,0.15); color: #e0a030; }
+.wp-node-status.critical { background: rgba(224,80,80,0.15); color: #e05050; }
+.wp-node-status.offline  { background: rgba(128,128,128,0.15); color: #888; }
+.wp-pipe-list { display: flex; flex-direction: column; gap: 2px; }
+.wp-pipe-item { display: flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 5px; background: rgba(0,200,255,0.05); font-size: 0.58rem; }
+.wp-pipe-item.leaking  { background: rgba(224,160,48,0.1); }
+.wp-pipe-item.blocked  { background: rgba(224,80,80,0.1); }
+.wp-pipe-id    { color: #00ccff; font-weight: 700; flex-shrink: 0; }
+.wp-pipe-label { color: var(--h-sec); flex: 1; }
+.wp-pipe-status { flex-shrink: 0; }
+.wp-pipe-status.normal      { color: #22c55e; }
+.wp-pipe-status.leaking     { color: #e0a030; }
+.wp-pipe-status.blocked     { color: #e05050; }
+.wp-pipe-status.maintenance { color: #8080e0; }
+
+/* ── GIS-style pipe label ── */
+.wp-gis-label {
+  display: inline-block;
+  background: rgba(255,255,255,0.92);
+  border: 1px solid rgba(0,100,200,0.5);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.6rem; font-weight: 800;
+  color: #0044cc;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  font-family: 'Orbitron', monospace;
+  text-shadow: none;
+}
+.wp-gis-label.leaking { color: #c07000; border-color: rgba(200,120,0,0.5); }
+.wp-gis-label.blocked { color: #cc0000; border-color: rgba(200,0,0,0.5); }
+
+/* ── GIS-style node chip ── */
+.wpn-gis-chip {
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(10,20,50,0.82);
+  border: 1.5px solid #dd2222;
+  border-radius: 5px;
+  padding: 2px 7px 2px 4px;
+  white-space: nowrap;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.5);
+}
+.wpn-gis-chip.warning { border-color: #e0a030; }
+.wpn-gis-chip.normal  { border-color: #1a88ff; }
+.wpn-gis-icon { font-size: 0.68rem; flex-shrink: 0; }
+.wpn-gis-id   { font-size: 0.6rem; font-weight: 800; color: #ff6666; letter-spacing: 0.03em; font-family: 'Orbitron', monospace; }
+.wpn-gis-chip.warning .wpn-gis-id { color: #e0a030; }
+.wpn-gis-chip.normal  .wpn-gis-id { color: #55aaff; }
+
+/* ── GIS popup ── */
+.wpn-gis-popup {
+  position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%);
+  background: rgba(2,10,25,0.92); backdrop-filter: blur(12px);
+  border: 1px solid rgba(0,150,255,0.4); border-radius: 8px;
+  padding: 7px 10px; min-width: 170px; z-index: 10;
+}
+.wpn-gis-popup-name { font-size: 0.62rem; font-weight: 700; color: #55aaff; margin-bottom: 5px; }
+.wpn-gis-popup-row  { display: flex; justify-content: space-between; gap: 8px; font-size: 0.57rem; color: var(--h-sec); margin-bottom: 2px; }
+.wpn-gis-popup-row span:last-child { color: var(--h-pri); font-weight: 600; }
+.wpn-s-normal   { color: #22c55e !important; }
+.wpn-s-warning  { color: #e0a030 !important; }
+.wpn-s-critical { color: #e05050 !important; }
+.wpn-s-offline  { color: #888    !important; }
+
+/* ── Water Supply Panel (ประปา) ── */
+.wsp-panel {
+  position: fixed; right: 14px; bottom: 52px; z-index: 509;
+  width: 240px; max-height: 70vh; overflow-y: auto;
+  background: rgba(2,8,22,0.93); backdrop-filter: blur(16px);
+  border: 1px solid rgba(0,204,255,0.35); border-radius: 12px;
+  padding: 12px; color: var(--h-pri);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  scrollbar-width: none;
+}
+.wsp-summary {
+  display: grid; grid-template-columns: repeat(4,1fr); gap: 6px;
+  margin: 10px 0;
+}
+.wsp-stat {
+  background: rgba(0,204,255,0.07); border: 1px solid rgba(0,204,255,0.15);
+  border-radius: 8px; padding: 6px 4px; text-align: center;
+}
+.wsp-stat-val { font-size: 1.1rem; font-weight: 700; color: #00ccff; line-height: 1; }
+.wsp-stat-lbl { font-size: 0.55rem; color: var(--h-sec); margin-top: 3px; }
+.wsp-tool-btn {
+  width: 100%; height: 32px; border-radius: 8px; border: 1px solid rgba(0,204,255,0.4);
+  background: rgba(0,204,255,0.1); color: #00ccff; font-size: 0.7rem; font-weight: 600;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: background .15s;
+}
+.wsp-tool-btn:hover { background: rgba(0,204,255,0.2); }
+.wsp-list-title { font-size: 0.6rem; font-weight: 700; color: var(--h-sec); text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
+.wsp-empty { text-align: center; padding: 14px 0; font-size: 0.65rem; color: var(--h-sec); line-height: 1.7; }
+.wsp-empty span { font-size: 0.6rem; opacity: .6; }
+.wsp-list { display: flex; flex-direction: column; gap: 3px; }
+.wsp-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 7px; border-radius: 7px;
+  background: rgba(0,204,255,0.04); border: 1px solid rgba(0,204,255,0.1);
+  font-size: 0.62rem;
+}
+.wsp-item.leaking  { border-color: rgba(224,160,48,0.3); background: rgba(224,160,48,0.07); }
+.wsp-item.blocked  { border-color: rgba(224,80,80,0.3); background: rgba(224,80,80,0.07); }
+.wsp-item-icon { font-size: 0.75rem; color: #00ccff; flex-shrink: 0; width: 14px; text-align: center; }
+.wsp-item-info { flex: 1; min-width: 0; }
+.wsp-item-label { display: block; color: var(--h-pri); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsp-item-meta  { display: block; color: var(--h-sec); font-size: 0.55rem; margin-top: 1px; }
+.wsp-item-status { flex-shrink: 0; font-size: 0.55rem; font-weight: 700; }
+.wsp-item-status.normal      { color: #22c55e; }
+.wsp-item-status.leaking     { color: #e0a030; }
+.wsp-item-status.blocked     { color: #e05050; }
+.wsp-item-status.maintenance { color: #8080e0; }
+
+/* ── Water Pipe Drawing Tool ── */
+.wpt-panel {
+  position: fixed; right: 14px; bottom: 52px; z-index: 510;
+  width: 220px;
+  background: rgba(2,8,22,0.92); backdrop-filter: blur(16px);
+  border: 1px solid rgba(0,204,255,0.3); border-radius: 12px;
+  padding: 12px; color: var(--h-pri);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.wpt-header {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.65rem; font-weight: 700; color: #00e8ff;
+  margin-bottom: 10px;
+}
+.wpt-header span { flex: 1; }
+.wpt-close { background: none; border: none; color: #888; cursor: pointer; font-size: 0.75rem; padding: 0 2px; }
+.wpt-close:hover { color: #fff; }
+
+.wpt-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
+.wpt-mode-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: rgba(0,204,255,0.06); border: 1px solid rgba(0,204,255,0.2);
+  border-radius: 8px; padding: 6px 4px; cursor: pointer; color: var(--h-sec);
+  font-size: 0.57rem; font-weight: 600; transition: all .15s;
+}
+.wpt-mode-btn:hover  { background: rgba(0,204,255,0.12); border-color: rgba(0,204,255,0.4); color: var(--h-pri); }
+.wpt-mode-btn.active { background: rgba(0,204,255,0.2);  border-color: #00ccff; color: #00e8ff; }
+.wpt-mode-icon { font-size: 1rem; line-height: 1; }
+
+.wpt-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.wpt-label  { font-size: 0.58rem; color: var(--h-sec); flex-shrink: 0; width: 54px; }
+.wpt-select {
+  flex: 1; background: rgba(0,204,255,0.07); border: 1px solid rgba(0,204,255,0.25);
+  border-radius: 6px; color: var(--h-pri); font-size: 0.58rem; padding: 3px 6px;
+}
+.wpt-select:focus { outline: none; border-color: #00ccff; }
+
+.wpt-hint {
+  font-size: 0.57rem; color: #6aabcf; background: rgba(0,204,255,0.06);
+  border-radius: 6px; padding: 5px 8px; margin-bottom: 8px; line-height: 1.4;
+  border: 1px solid rgba(0,204,255,0.12);
+}
+.wpt-stats { display: flex; gap: 5px; align-items: center; font-size: 0.57rem; color: var(--h-sec); margin-bottom: 7px; }
+.wpt-stats strong { color: #00e8ff; }
+.wpt-actions { display: flex; gap: 5px; }
+.wpt-btn {
+  flex: 1; padding: 5px 6px; border-radius: 7px; font-size: 0.58rem; font-weight: 700;
+  cursor: pointer; border: 1px solid; transition: all .15s;
+}
+.wpt-btn:disabled { opacity: .35; cursor: not-allowed; }
+.wpt-undo  { background: rgba(56,189,248,0.1); border-color: rgba(56,189,248,0.3); color: #38bdf8; }
+.wpt-clear { background: rgba(239,68,68,0.1);  border-color: rgba(239,68,68,0.3);  color: #ef4444; }
+.wpt-undo:not(:disabled):hover  { background: rgba(56,189,248,0.2); }
+.wpt-clear:not(:disabled):hover { background: rgba(239,68,68,0.2); }
+
+/* Node chip labels (screen overlay) */
+.wpt-node-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  font-size: 0.65rem; font-weight: 900; line-height: 1;
+}
+.wpt-node-chip.valve   { background: rgba(224,160,48,0.9); color: #fff; border: 1.5px solid #e0a030; }
+.wpt-node-chip.hydrant { background: rgba(220,30,30,0.9);  color: #fff; border: 1.5px solid #ee3333; }
+.wpt-node-chip.meter   { background: rgba(26,85,204,0.9);  color: #fff; border: 1.5px solid #1a55cc; }
+
+/* ── อบต. Boundary Label ── */
+.tambon-label {
+  display: inline-block;
+  background: rgba(20, 15, 0, 0.72);
+  border: 1.5px solid rgba(255, 204, 0, 0.85);
+  color: #ffe866;
+  font-family: 'Noto Sans Thai', sans-serif;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  backdrop-filter: blur(2px);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
 .walk-drop-hint {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
   z-index: 120; pointer-events: none;
@@ -6366,4 +7898,18 @@ onBeforeUnmount(() => {
   background: radial-gradient(ellipse at 50% 40%, transparent 55%, rgba(2,4,18,0.55) 100%);
 }
 .night-mode .viewport { position: relative; }
+
+/* ── Compass ──────────────────────────────────────────── */
+.map-compass {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 120;
+  cursor: default;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.55));
+  transition: opacity 0.2s;
+  opacity: 0.88;
+  pointer-events: none;
+}
+.map-compass:hover { opacity: 1; }
 </style>

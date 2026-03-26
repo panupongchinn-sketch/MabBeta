@@ -1,7 +1,6 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center p-4 relative"
-    style="background-image:url('/bg.png');background-size:cover;background-position:center;background-repeat:no-repeat;">
-    <div class="w-full max-w-md relative z-10">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;background-image:url('/bg.png');background-size:cover;background-position:center;background-repeat:no-repeat;">
+    <div style="width:100%;max-width:448px;position:relative;z-index:10">
       <!-- Single Card -->
       <div class="bg-white rounded-2xl shadow-2xl overflow-hidden">
         <!-- Logo -->
@@ -11,8 +10,7 @@
         </div>
 
         <div class="px-6 pb-2">
-          <h2 class="text-lg font-semibold text-slate-800">เข้าสู่ระบบ</h2>
-          <p class="text-sm text-slate-500">กรอกอีเมลและรหัสผ่านของคุณ</p>
+          <h2 class="text-lg font-semibold text-slate-800">ระบบพัฒนาฐานข้อมูลเมืองเพื่อการบริหารจัดการ</h2>
         </div>
 
         <form class="px-6 pb-6 pt-4 space-y-4" @submit.prevent="onLogin">
@@ -87,7 +85,7 @@
           <div class="pt-1 flex items-center justify-between text-sm">
             <span class="text-slate-500">
               ยังไม่มีบัญชี?
-              <NuxtLink to="/signup" class="font-semibold text-red-600 hover:text-red-700">
+              <NuxtLink to="/register" class="font-semibold text-red-600 hover:text-red-700">
                 สมัครสมาชิก
               </NuxtLink>
             </span>

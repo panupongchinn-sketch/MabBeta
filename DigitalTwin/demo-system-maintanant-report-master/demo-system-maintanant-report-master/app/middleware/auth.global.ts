@@ -1,7 +1,7 @@
-export default defineNuxtRouteMiddleware((to) => {
+export default defineNuxtRouteMiddleware(async (to) => {
   if (import.meta.server) return
 
-  const { user, initSession } = useCustomAuth()
+  const { user, initSession, refreshUser, signOut } = useCustomAuth()
 
   // โหลด session จาก localStorage ถ้ายังไม่มี
   if (!user.value) {
@@ -35,6 +35,21 @@ export default defineNuxtRouteMiddleware((to) => {
       return navigateTo('/login')
     }
     return
+  }
+
+  // ============================================================
+  // Login แล้ว → ตรวจสอบสถานะจาก DB เสมอ (กรณีถูก revoke)
+  // ============================================================
+  if (isProtected || isAdminPage) {
+    await refreshUser()
+    if (!user.value) {
+      signOut()
+      return navigateTo('/login')
+    }
+    if (!user.value.is_active) {
+      signOut()
+      return navigateTo('/login')
+    }
   }
 
   // ============================================================

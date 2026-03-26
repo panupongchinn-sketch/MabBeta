@@ -33,6 +33,8 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     MEPBETA_TRAFFIC_API_URL: process.env.MEPBETA_TRAFFIC_API_URL,
     MEPBETA_LIGHTING_API_URL: process.env.MEPBETA_LIGHTING_API_URL,

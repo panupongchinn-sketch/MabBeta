@@ -63,34 +63,34 @@ async function generateWithGemini(apiKey: string, prompt: string): Promise<strin
 
 function buildFallbackReport(kpi: KpiSnapshot, incidents: Incident[]): string {
   const risks: string[] = []
-  if (kpi.traffic_congestion_zones > 0) risks.push(`traffic congestion in ${kpi.traffic_congestion_zones} zones`)
-  if (kpi.lighting_fault_points > 0) risks.push(`street-light faults ${kpi.lighting_fault_points} points`)
-  if (kpi.water_risk_areas > 0) risks.push(`water risk in ${kpi.water_risk_areas} areas`)
-  if ((kpi.avg_pm25 ?? 0) > 50) risks.push(`elevated PM2.5 (avg ${kpi.avg_pm25})`)
+  if (kpi.traffic_congestion_zones > 0) risks.push(`การจราจรติดขัด ${kpi.traffic_congestion_zones} โซน`)
+  if (kpi.lighting_fault_points > 0) risks.push(`ไฟส่องสว่างขัดข้อง ${kpi.lighting_fault_points} จุด`)
+  if (kpi.water_risk_areas > 0) risks.push(`ความเสี่ยงน้ำท่วม ${kpi.water_risk_areas} พื้นที่`)
+  if ((kpi.avg_pm25 ?? 0) > 50) risks.push(`PM2.5 สูงกว่าเกณฑ์ (เฉลี่ย ${kpi.avg_pm25})`)
 
   const summary = risks.length
-    ? `Today we identified key watch areas: ${risks.join(', ')}.`
-    : 'Today all monitored systems are in normal range with no major risks detected.'
+    ? `วันนี้พบประเด็นที่ต้องเฝ้าระวัง ได้แก่ ${risks.join(', ')}`
+    : 'ภาพรวมระบบทั้งหมดอยู่ในเกณฑ์ปกติ ไม่พบความเสี่ยงสำคัญในขณะนี้'
 
   const topLines = incidents.length
     ? incidents.slice(0, 3).map((incident, index) => `${index + 1}. ${incident.title} (${incident.severity})`).join('\n')
-    : '1. No high-priority incidents'
+    : '1. ไม่พบเหตุการณ์ที่ต้องเฝ้าระวังเร่งด่วน'
 
   return [
-    'Executive summary:',
+    '▸ สถานการณ์โดยรวม',
     summary,
     '',
-    'High-priority watch areas:',
+    '▸ จุดที่ต้องเฝ้าระวัง',
     topLines,
     '',
-    'Suggested immediate actions:',
-    '1. Validate sensor quality for zones with repeated alerts.',
-    '2. Dispatch field teams to critical incidents first.',
-    '3. Keep operations center informed every 60 minutes.',
+    '▸ ข้อเสนอแนะเร่งด่วน',
+    '1. ตรวจสอบคุณภาพเซ็นเซอร์ในพื้นที่ที่มีการแจ้งเตือนซ้ำ',
+    '2. ส่งทีมภาคสนามดูแลจุดวิกฤตก่อน',
+    '3. รายงานสถานการณ์ต่อศูนย์ปฏิบัติการทุก 60 นาที',
     '',
-    'Suggested follow-up checks for next 24 hours:',
-    '1. Recheck PM2.5, water rise, and traffic correlation trends.',
-    '2. Confirm recovery status on lighting and CCTV assets.',
+    '▸ แผนติดตามผลใน 24 ชั่วโมงข้างหน้า',
+    '1. ติดตาม PM2.5 ระดับน้ำ และแนวโน้มการจราจรอย่างต่อเนื่อง',
+    '2. ยืนยันสถานะการแก้ไขระบบไฟส่องสว่างและกล้อง CCTV',
   ].join('\n')
 }
 
