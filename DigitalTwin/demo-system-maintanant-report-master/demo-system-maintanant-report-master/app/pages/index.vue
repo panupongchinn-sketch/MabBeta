@@ -2344,14 +2344,26 @@ async function fetchOSMData(lat: number, lng: number, z: number) {
   // Microsoft Global ML Building Footprints (ครอบคลุมทั่วไทยรวมพื้นที่ชนบท)
   const msUrl = `/api/ms-buildings?south=${south}&west=${west}&north=${north}&east=${east}`
 
+  const osmFetch = (async () => {
+    for (const [mirror, ms] of [
+      ['https://overpass-api.de/api/interpreter', 20_000],
+      ['https://overpass.kumi.systems/api/interpreter', 35_000],
+    ] as [string, number][]) {
+      try {
+        const r = await fetch(`${mirror}?data=${encodeURIComponent(osmQuery)}`, { signal: AbortSignal.timeout(ms) })
+        if (r.ok) return r
+      } catch { /* try next mirror */ }
+    }
+    throw new Error('Overpass unavailable')
+  })()
+
   const [osmResult, r1, r2, r3, r4, rMs] = await Promise.allSettled([
-    fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQuery)}`),
+    osmFetch,
     fetch(sq1), fetch(sq2), fetch(sq3), fetch(sq4),
     fetch(msUrl),
   ])
 
   if (osmResult.status !== "fulfilled") throw osmResult.reason
-  if (!osmResult.value.ok) throw new Error(`Overpass ${osmResult.value.status}`)
 
   const osmData = await osmResult.value.json()
 
@@ -2727,15 +2739,15 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
   try {
     // Phase 1 = 0–20%: center buildings + trees + Supabase
     let data: any = null
-    for (let attempt = 1; attempt <= 10 && !data; attempt++) {
+    for (let attempt = 1; attempt <= 3 && !data; attempt++) {
       if (token !== osmLoadToken) return
-      osmLoadingStep.value = attempt > 1 ? `ดึงข้อมูล OSM+MS Buildings (retry ${attempt}/10)...` : "กำลังดึงข้อมูล OSM + Microsoft Buildings..."
+      osmLoadingStep.value = attempt > 1 ? `ดึงข้อมูล OSM (retry ${attempt}/3)...` : "กำลังดึงข้อมูล OSM + Microsoft Buildings..."
       try {
         data = await fetchOSMData(lat, lng, z)
         osmLoadingPct.value = 20
       } catch (e) {
-        const wait = Math.min(attempt * 3000, 15000)
-        osmLoadingStep.value = `ดึงข้อมูลล้มเหลว รอ ${wait / 1000}s แล้ว retry...`
+        const wait = attempt * 2000
+        osmLoadingStep.value = `ดึงข้อมูลล้มเหลว รอ ${wait / 1000}s...`
         osmDataCache.delete(`${Math.floor(lonToTileX(lng, z))},${Math.floor(latToTileY(lat, z))},${Math.max(1, Math.min(20, Math.round(z)))}`)
         await new Promise(r => setTimeout(r, wait))
       }
@@ -2760,38 +2772,28 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
       { bb: `${south},${west},${midLat},${midLng}`,  label: "ล่าง-ซ้าย" },
       { bb: `${south},${midLng},${midLat},${east}`,  label: "ล่าง-ขวา" },
     ]
-    const MAX_RETRY = 10
-    for (let qi = 0; qi < outerBboxes.length; qi++) {
-      if (token !== osmLoadToken) break
-      const { bb, label } = outerBboxes[qi]
-      osmLoadingStep.value = `โหลดอาคาร ${label} (${qi + 1}/4)...`
-      let success = false
-      for (let attempt = 1; attempt <= MAX_RETRY && !success; attempt++) {
-        if (token !== osmLoadToken) break
-        if (attempt > 1) osmLoadingStep.value = `อาคาร ${label} retry ${attempt}/10...`
-        try {
-          const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`)
-          if (!res.ok) {
-            const wait = Math.min(attempt * 3000, 15000)
-            osmLoadingStep.value = `อาคาร ${label} ล้มเหลว (${res.status}) รอ ${wait / 1000}s...`
-            await new Promise(r => setTimeout(r, wait))
-            continue
-          }
-          if (token !== osmLoadToken) break
-          const d = await res.json()
-          if (d.elements?.length > 0) {
-            osmLoadingStep.value = `render อาคาร ${label}...`
-            await appendOSMBuildings(d.elements, lat, lng, z, token)
-          }
-          success = true
-          osmLoadingPct.value = 40 + (qi + 1) * 15
-        } catch (e) {
-          const wait = Math.min(attempt * 3000, 15000)
-          osmLoadingStep.value = `อาคาร ${label} error รอ ${wait / 1000}s...`
-          await new Promise(r => setTimeout(r, wait))
+    osmLoadingStep.value = "โหลดอาคารรอบนอก (4 ทิศพร้อมกัน)..."
+    await Promise.allSettled(outerBboxes.map(async ({ bb, label }, qi) => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (token !== osmLoadToken) return
+        for (const mirror of [
+          'https://overpass-api.de/api/interpreter',
+          'https://overpass.kumi.systems/api/interpreter',
+        ]) {
+          try {
+            const res = await fetch(`${mirror}?data=${encodeURIComponent(bldQ(bb))}`, { signal: AbortSignal.timeout(28_000) })
+            if (!res.ok) continue
+            const d = await res.json()
+            if (d.elements?.length > 0 && token === osmLoadToken) {
+              await appendOSMBuildings(d.elements, lat, lng, z, token)
+            }
+            osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 15)
+            return
+          } catch { /* try next mirror */ }
         }
+        if (attempt < 2) await new Promise(r => setTimeout(r, 2000))
       }
-    }
+    }))
     if (token === osmLoadToken) {
       osmLoadingPct.value = 100
       osmLoadingStep.value = "โหลดอาคารครบแล้ว ✓"
