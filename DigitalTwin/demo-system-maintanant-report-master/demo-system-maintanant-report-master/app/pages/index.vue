@@ -3374,19 +3374,20 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
     ]
     // Phase 2: 6 strips ทีละโซน — สร้างเสร็จโซนหนึ่งก่อนค่อยไปโซนถัดไป
     const fetchOuterStrip = async (bb: string): Promise<Response> => {
-      const url = (host: string) =>
-        `${host}/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`
-      // ลอง kumi ก่อน (Phase 1 ใช้ overpass-api.de → ไม่ชนกัน)
-      try {
-        const r = await fetch(url('https://overpass.kumi.systems'), { signal: AbortSignal.timeout(12_000) })
-        if (!r.ok) throw new Error(String(r.status))
-        return r
-      } catch {
-        // fallback overpass-api.de ถ้า kumi ล้มเหลว
-        const r = await fetch(url('https://overpass-api.de'), { signal: AbortSignal.timeout(12_000) })
-        if (!r.ok) throw new Error(String(r.status))
-        return r
+      const query = encodeURIComponent(bldQ(bb))
+      const mirrors = [
+        'https://overpass-api.de',
+        'https://overpass.kumi.systems',
+        'https://overpass.openstreetmap.fr',
+        'https://overpass.openstreetmap.ru',
+      ].sort(() => Math.random() - 0.5)  // shuffle เพื่อกระจาย load
+      for (const host of mirrors) {
+        try {
+          const r = await fetch(`${host}/api/interpreter?data=${query}`, { signal: AbortSignal.timeout(15_000) })
+          if (r.ok) return r
+        } catch { continue }
       }
+      throw new Error('All Overpass mirrors failed')
     }
     for (let qi = 0; qi < outerBboxes.length; qi++) {
       const { bb, label } = outerBboxes[qi]
