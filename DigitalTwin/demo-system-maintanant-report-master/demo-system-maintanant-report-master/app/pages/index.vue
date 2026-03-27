@@ -2816,7 +2816,7 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
       const nd = nodeMap.get(nid)
       if (!nd) continue
       const wp = latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)
-      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF) pts.push(wp)
+      pts.push(wp)
     }
     return pts
   }
@@ -2990,7 +2990,6 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     if (el.type === "node" && (el.tags?.natural === "tree" || el.tags?.natural === "tree_row")) {
       const wp = latLngToWorld(el.lat, el.lon, centerLat, centerLng, z)
       // ข้ามต้นไม้ที่อยู่นอก map surface
-      if (Math.abs(wp.x) > WORLD_HALF || Math.abs(wp.z) > WORLD_HALF) continue
       tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
     }
 
@@ -3123,7 +3122,7 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
       const nd = nodeMap.get(nid)
       if (!nd) continue
       const wp = latLngToWorld(nd.lat, nd.lon, centerLat, centerLng, z)
-      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF) pts.push(wp)
+      pts.push(wp)
     }
     return pts
   }
@@ -3195,8 +3194,7 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
     // --- ต้นไม้ & พืชพรรณ (เหมือน Phase 1) ---
     if (el.type === "node" && (el.tags?.natural === "tree" || el.tags?.natural === "tree_row")) {
       const wp = latLngToWorld(el.lat, el.lon, centerLat, centerLng, z)
-      if (Math.abs(wp.x) <= WORLD_HALF && Math.abs(wp.z) <= WORLD_HALF)
-        tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
+      tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
     }
     const tags = el.tags || {}
     const isForest  = tags.natural === "wood"    || tags.landuse === "forest"
