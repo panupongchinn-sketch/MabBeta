@@ -3418,12 +3418,14 @@ async function saveMapCache() {
           created_by: authUser.value?.id ?? null,
           saved_at: new Date().toISOString(),
         }, { onConflict: 'tile_x,tile_y,zoom,zone_index' })
-      if (error) throw new Error(error.message)
+      if (error) throw new Error(error.message || error.code || JSON.stringify(error))
     }
     mapCacheSaved.value = true
     mapCacheSaveMsg.value = "บันทึกแผนที่สำเร็จ ✓"
   } catch (err: any) {
-    mapCacheSaveMsg.value = `บันทึกล้มเหลว: ${err.message}`
+    const msg = err?.message || String(err)
+    console.error('[map-cache save]', err)
+    mapCacheSaveMsg.value = `บันทึกล้มเหลว: ${msg}`
   } finally {
     mapCacheSaving.value = false
   }
@@ -6700,7 +6702,7 @@ onBeforeUnmount(() => {
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M2 2h8l2 2v8H2z"/><rect x="4" y="8" width="6" height="4"/><rect x="4" y="2" width="5" height="3"/></svg>
             {{ mapCacheSaving ? 'กำลังบันทึก...' : 'บันทึกแผนที่' }}
           </button>
-          <div v-if="mapCacheSaveMsg" :style="{ fontSize:'10px', marginTop:'4px', color: mapCacheSaveMsg.includes('✓') ? '#22c55e' : '#f87171' }">{{ mapCacheSaveMsg }}</div>
+          <div v-if="mapCacheSaveMsg" :style="{ fontSize:'10px', marginTop:'4px', color: mapCacheSaveMsg.includes('✓') ? '#22c55e' : '#f87171', wordBreak:'break-all', whiteSpace:'pre-wrap' }">{{ mapCacheSaveMsg }}</div>
         </div>
         <p v-if="mapSearchError" class="err-text">{{ mapSearchError }}</p>
         <p class="attrib-text">© OpenStreetMap · CartoDB</p>
