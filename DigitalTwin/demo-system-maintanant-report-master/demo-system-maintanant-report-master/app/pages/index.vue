@@ -37,7 +37,7 @@ const mapZoom = ref(16)
 const mapSearchQuery = ref("")
 const mapSearchLoading = ref(false)
 const mapSearchError = ref("")
-const mapSearchResults = ref<{ display: string; lat: number; lng: number }[]>([])
+const mapSearchResults = ref<{ display: string; fullDisplay: string; lat: number; lng: number }[]>([])
 const mapDragSelectOn = ref(false)
 const projectName = ref("")
 const savingProject = ref(false)
@@ -1706,7 +1706,7 @@ async function initThree() {
 
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xf2f5f8)
-  scene.fog = new THREE.Fog(0xf2f5f8, 260, 1800)
+  scene.fog = null
 
   camera = new THREE.PerspectiveCamera(48, 1, 0.01, 2000)
   camera.position.set(...defaultCamPos)
@@ -1895,7 +1895,7 @@ function applyDayNightMode() {
 
   // Sky & atmosphere
   scene.background = new THREE.Color(isDay ? 0xf2f5f8 : 0x03070f)
-  scene.fog = new THREE.FogExp2(isDay ? 0xd8e8f4 : 0x04091a, isDay ? 0.00055 : 0.00042)
+  scene.fog = null
 
   // Tone mapping — cinematic night
   renderer.toneMappingExposure = isDay ? 0.96 : 0.52
@@ -2481,7 +2481,7 @@ function fetchOSMData(lat: number, lng: number, z: number) {
 
   // vegetation ใช้ cBbox (5×5 tiles) แทน fullBbox (11×11 tiles)
   // fullBbox ขนาดใหญ่เกินไป → timeout บ่อย → ทำให้ Phase 1 ทั้งหมดพัง (รวมอาคาร)
-  const vegetationQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${cBbox});node["natural"="tree_row"](${cBbox});way["natural"="wood"](${cBbox});relation["natural"="wood"](${cBbox});way["landuse"="forest"](${cBbox});relation["landuse"="forest"](${cBbox});way["leisure"="park"](${cBbox});relation["leisure"="park"](${cBbox});way["natural"="scrub"](${cBbox});relation["natural"="scrub"](${cBbox});way["landuse"="orchard"](${cBbox});relation["landuse"="orchard"](${cBbox});way["natural"="grassland"](${cBbox});relation["natural"="grassland"](${cBbox});way["natural"="heath"](${cBbox});relation["natural"="heath"](${cBbox}););(._;>;);out body;`
+  const vegetationQuery = `[out:json][timeout:25][maxsize:67108864];(node["natural"="tree"](${cBbox});node["natural"="tree_row"](${cBbox});way["natural"="wood"](${cBbox});relation["natural"="wood"](${cBbox});way["landuse"="forest"](${cBbox});relation["landuse"="forest"](${cBbox});way["leisure"="park"](${cBbox});relation["leisure"="park"](${cBbox});way["leisure"="pitch"](${cBbox});relation["leisure"="pitch"](${cBbox});way["natural"="scrub"](${cBbox});relation["natural"="scrub"](${cBbox});way["landuse"="orchard"](${cBbox});relation["landuse"="orchard"](${cBbox});way["natural"="grassland"](${cBbox});relation["natural"="grassland"](${cBbox});way["natural"="meadow"](${cBbox});relation["natural"="meadow"](${cBbox});way["natural"="heath"](${cBbox});relation["natural"="heath"](${cBbox});way["landuse"="farmland"](${cBbox});relation["landuse"="farmland"](${cBbox});way["landuse"="farm"](${cBbox});relation["landuse"="farm"](${cBbox});way["landuse"="meadow"](${cBbox});relation["landuse"="meadow"](${cBbox}););(._;>;);out body;`
   const buildingQuery = `[out:json][timeout:25][maxsize:67108864];(way["building"](${cBbox});relation["building"]["type"="multipolygon"](${cBbox}););(._;>;);out body;`
 
   // Supabase: 4 quadrant parallel (ไม่มี rate limit)
@@ -2682,9 +2682,9 @@ function pushBuildingGeometries(
 }
 
 function getTreeRenderBudget(z: number) {
-  if (z >= 18) return { densityScale: 1.0, maxInstances: 2600, maxPerArea: 220, cellSize: 1.4 }
-  if (z >= 17) return { densityScale: 0.72, maxInstances: 1800, maxPerArea: 150, cellSize: 1.9 }
-  return { densityScale: 0.6, maxInstances: 1800, maxPerArea: 130, cellSize: 2.3 }
+  if (z >= 18) return { densityScale: 1.0, maxInstances: 4000, maxPerArea: 280, cellSize: 1.2 }
+  if (z >= 17) return { densityScale: 0.85, maxInstances: 3000, maxPerArea: 200, cellSize: 1.6 }
+  return { densityScale: 0.72, maxInstances: 2400, maxPerArea: 160, cellSize: 2.0 }
 }
 
 function addTreeInstances(
@@ -2693,46 +2693,72 @@ function addTreeInstances(
 ) {
   if (!trees.length) return
 
-  const trunkGeo = new THREE.CylinderGeometry(0.5, 1, 1, 6)
-  const crownGeo = new THREE.SphereGeometry(1, 6, 4)
-  const trunkMesh = new THREE.InstancedMesh(
-    trunkGeo,
-    new THREE.MeshLambertMaterial({ color: 0x7a5230 }),
-    trees.length,
-  )
-  const crownMesh = new THREE.InstancedMesh(
-    crownGeo,
-    new THREE.MeshLambertMaterial({ color: 0x3a7d44 }),
-    trees.length,
-  )
+  const trunkGeo = new THREE.CylinderGeometry(0.32, 0.8, 1, 8)
+  const crownGeo = new THREE.SphereGeometry(1, 10, 7)
+
+  const trunkMat  = new THREE.MeshLambertMaterial({ color: 0x6b4520 })  // ลำต้น น้ำตาลอุ่น
+  const crownTopMat = new THREE.MeshLambertMaterial({ color: 0x62aa3c }) // ชั้นบน เขียวสด
+  const crownMidMat = new THREE.MeshLambertMaterial({ color: 0x4e8a2e }) // ชั้นกลาง หลัก
+  const crownBotMat = new THREE.MeshLambertMaterial({ color: 0x3a6d22 }) // ชั้นล่าง เข้มกว่า
+
+  const trunkMesh    = new THREE.InstancedMesh(trunkGeo, trunkMat,    trees.length)
+  const crownTopMesh = new THREE.InstancedMesh(crownGeo, crownTopMat, trees.length)
+  const crownMidMesh = new THREE.InstancedMesh(crownGeo, crownMidMat, trees.length)
+  const crownBotMesh = new THREE.InstancedMesh(crownGeo, crownBotMat, trees.length)
+
   const dummy = new THREE.Object3D()
+  const zeroDummy = new THREE.Object3D()
+  zeroDummy.scale.set(0, 0, 0)
+  zeroDummy.updateMatrix()
 
   for (let i = 0; i < trees.length; i++) {
-    const tree = trees[i]
+    const t = trees[i]
+    const isPalm = t.crownStretch < 0.55  // palm-style: ลำสูง มงกุฎเล็ก
 
-    dummy.position.set(tree.x, tree.y + tree.trunkH / 2, tree.z)
+    // ─── ลำต้น ───
+    dummy.position.set(t.x, t.y + t.trunkH * 0.5, t.z)
+    dummy.scale.set(t.trunkR, t.trunkH, t.trunkR)
     dummy.rotation.set(0, 0, 0)
-    dummy.scale.set(tree.trunkR, tree.trunkH, tree.trunkR)
     dummy.updateMatrix()
     trunkMesh.setMatrixAt(i, dummy.matrix)
 
-    dummy.position.set(tree.x, tree.y + tree.trunkH + tree.crownR * 0.65, tree.z)
-    dummy.rotation.set(0, 0, 0)
-    dummy.scale.set(tree.crownR * 0.95, tree.crownR * tree.crownStretch, tree.crownR * 0.95)
-    dummy.updateMatrix()
-    crownMesh.setMatrixAt(i, dummy.matrix)
+    if (isPalm) {
+      // ─── พาล์ม: มงกุฎชั้นเดียวที่ยอด ───
+      dummy.position.set(t.x, t.y + t.trunkH + t.crownR * 0.5, t.z)
+      dummy.scale.set(t.crownR, t.crownR * t.crownStretch, t.crownR)
+      dummy.updateMatrix()
+      crownMidMesh.setMatrixAt(i, dummy.matrix)
+      crownTopMesh.setMatrixAt(i, zeroDummy.matrix)
+      crownBotMesh.setMatrixAt(i, zeroDummy.matrix)
+    } else {
+      // ─── ใบไม้ 3 ชั้น: ล่าง กลาง บน ───
+      // ชั้นล่าง — กว้างที่สุด
+      dummy.position.set(t.x, t.y + t.trunkH + t.crownR * 0.05, t.z)
+      dummy.scale.set(t.crownR * 0.95, t.crownR * t.crownStretch * 0.60, t.crownR * 0.95)
+      dummy.updateMatrix()
+      crownBotMesh.setMatrixAt(i, dummy.matrix)
+
+      // ชั้นกลาง — หลัก
+      dummy.position.set(t.x, t.y + t.trunkH + t.crownR * 0.55, t.z)
+      dummy.scale.set(t.crownR, t.crownR * t.crownStretch, t.crownR)
+      dummy.updateMatrix()
+      crownMidMesh.setMatrixAt(i, dummy.matrix)
+
+      // ชั้นบน — เล็กกว่า อยู่ยอดสุด
+      dummy.position.set(t.x, t.y + t.trunkH + t.crownR * 1.15, t.z)
+      dummy.scale.set(t.crownR * 0.55, t.crownR * t.crownStretch * 0.75, t.crownR * 0.55)
+      dummy.updateMatrix()
+      crownTopMesh.setMatrixAt(i, dummy.matrix)
+    }
   }
 
-  trunkMesh.instanceMatrix.needsUpdate = true
-  crownMesh.instanceMatrix.needsUpdate = true
-  trunkMesh.castShadow = true
-  trunkMesh.receiveShadow = true
-  crownMesh.castShadow = true
-  crownMesh.receiveShadow = true
-  trunkMesh.computeBoundingSphere?.()
-  crownMesh.computeBoundingSphere?.()
-  parent.add(trunkMesh)
-  parent.add(crownMesh)
+  for (const m of [trunkMesh, crownBotMesh, crownMidMesh, crownTopMesh]) {
+    m.instanceMatrix.needsUpdate = true
+    m.castShadow = true
+    m.receiveShadow = true
+    m.computeBoundingSphere?.()
+    parent.add(m)
+  }
 }
 
 async function buildOSMScene(data: any, centerLat: number, centerLng: number, z: number, token: number) {
@@ -2751,7 +2777,9 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
 
   const wallGeos: any[] = []
   const roofGeos: any[] = []
-  const vegetationGeos: any[] = []
+  const forestGeos: any[] = []    // ป่า/wood/scrub/orchard
+  const farmGeos: any[] = []      // ที่นา/farmland/farm/meadow
+  const grassGeos: any[] = []     // สนาม/park/pitch/grassland
   const treeInstances: Array<{ x: number; z: number; y: number; trunkH: number; trunkR: number; crownR: number; crownStretch: number }> = []
   const treeBudget = getTreeRenderBudget(z)
   const treeCells = new Set<string>()
@@ -2774,10 +2802,10 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
       x,
       z: zPos,
       y: y0,
-      trunkH: 1.0 + Math.random() * 0.8,
-      trunkR: 0.10 + Math.random() * 0.06,
-      crownR: 0.7 + Math.random() * 0.6,
-      crownStretch: 0.78 + Math.random() * 0.34,
+      ...(Math.random() < 0.20
+        ? { trunkH: 2.2 + Math.random() * 2.0, trunkR: 0.04 + Math.random() * 0.03, crownR: 0.55 + Math.random() * 0.35, crownStretch: 0.35 + Math.random() * 0.15 }  // palm
+        : { trunkH: 1.0 + Math.random() * 0.8, trunkR: 0.07 + Math.random() * 0.05, crownR: 0.95 + Math.random() * 0.65, crownStretch: 0.90 + Math.random() * 0.22 }  // broadleaf
+      ),
     })
     return true
   }
@@ -2813,10 +2841,11 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     }
   }
 
-  function addVegetationOverlay(pts: { x: number; z: number }[]) {
+  function addVegetationOverlay(pts: { x: number; z: number }[], type: "forest" | "farm" | "grass") {
     if (pts.length < 3) return
     const y = bldGroundY(pts) + 0.025
-    pushGroundOverlayGeometry(pts, y, vegetationGeos)
+    const geos = type === "forest" ? forestGeos : type === "farm" ? farmGeos : grassGeos
+    pushGroundOverlayGeometry(pts, y, geos)
   }
 
   // --- Pass 1: Buildings from Supabase / Microsoft ML ---
@@ -2966,21 +2995,24 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
     }
 
     const tags = el.tags || {}
-    const isForest  = tags.natural === "wood"      || tags.landuse === "forest"
-    const isPark    = tags.leisure === "park"
-    const isScrub   = tags.natural === "scrub"     || tags.natural === "heath"
+    const isForest  = tags.natural === "wood"    || tags.landuse === "forest"
+    const isScrub   = tags.natural === "scrub"   || tags.natural === "heath"
     const isOrchard = tags.landuse === "orchard"
-    const isGrass   = tags.natural === "grassland"
+    const isFarm    = tags.landuse === "farmland" || tags.landuse === "farm" || tags.landuse === "rice_field" || tags.landuse === "meadow" || tags.natural === "meadow"
+    const isPark    = tags.leisure === "park"
+    const isPitch   = tags.leisure === "pitch"   || tags.leisure === "stadium"
+    const isGrass   = tags.natural === "grassland" || tags.natural === "grass" || tags.landuse === "grass"
     const isGreenArea = (el.type === "way" || el.type === "relation") &&
-      (isForest || isPark || isScrub || isOrchard || isGrass)
+      (isForest || isScrub || isOrchard || isFarm || isPark || isPitch || isGrass)
 
     if (isGreenArea) {
-      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25) * treeBudget.densityScale
+      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : isFarm ? 0.05 : isPitch ? 0.0 : isGrass ? 0.0 : isPark ? 0.0 : 0.0) * treeBudget.densityScale
+      const vegType: "forest" | "farm" | "grass" = (isForest || isScrub || isOrchard) ? "forest" : isFarm ? "farm" : "grass"
 
       if (el.type === "way" && (el.nodes?.length ?? 0) >= 3) {
         const pts = collectWorldPtsFromNodeIds(el.nodes)
-        addVegetationOverlay(pts)
-        scatterTreesInPolygon(pts, density)
+        addVegetationOverlay(pts, vegType)
+        if (density > 0) scatterTreesInPolygon(pts, density)
       }
 
       if (el.type === "relation" && el.members?.length) {
@@ -2991,8 +3023,8 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
           if (!memberNodeIds || memberNodeIds.length < 3) continue
           const pts = collectWorldPtsFromNodeIds(memberNodeIds)
           if (pts.length >= 3) {
-            addVegetationOverlay(pts)
-            scatterTreesInPolygon(pts, density)
+            addVegetationOverlay(pts, vegType)
+            if (density > 0) scatterTreesInPolygon(pts, density)
           }
         }
       }
@@ -3003,16 +3035,12 @@ async function buildOSMScene(data: any, centerLat: number, centerLng: number, z:
   if (token !== osmLoadToken) return
 
   osmVegetationGroup = new THREE.Group()
-  addMergedGeos(
-    vegetationGeos,
-    new THREE.MeshLambertMaterial({
-      color: 0x7ea566,
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-    }),
-    osmVegetationGroup,
-  )
+  // ป่า/forest — เขียวเข้ม
+  if (forestGeos.length) addMergedGeos(forestGeos, new THREE.MeshLambertMaterial({ color: 0x3d7a35, transparent: true, opacity: 0.35, depthWrite: false }), osmVegetationGroup)
+  // ที่นา/farmland — เหลือง-เขียว
+  if (farmGeos.length)   addMergedGeos(farmGeos,   new THREE.MeshLambertMaterial({ color: 0xbfd45a, transparent: true, opacity: 0.40, depthWrite: false }), osmVegetationGroup)
+  // สนาม/park/pitch — เขียวสด
+  if (grassGeos.length)  addMergedGeos(grassGeos,  new THREE.MeshLambertMaterial({ color: 0x5eb84e, transparent: true, opacity: 0.30, depthWrite: false }), osmVegetationGroup)
   scene.add(osmVegetationGroup)
 
   await yieldToBrowser()
@@ -3081,10 +3109,10 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
     treeCells.add(cell)
     treeInstances.push({
       x, z: zPos, y: y0,
-      trunkH: 1.0 + Math.random() * 0.8,
-      trunkR: 0.10 + Math.random() * 0.06,
-      crownR: 0.7 + Math.random() * 0.6,
-      crownStretch: 0.78 + Math.random() * 0.34,
+      ...(Math.random() < 0.20
+        ? { trunkH: 2.2 + Math.random() * 2.0, trunkR: 0.04 + Math.random() * 0.03, crownR: 0.55 + Math.random() * 0.35, crownStretch: 0.35 + Math.random() * 0.15 }  // palm
+        : { trunkH: 1.0 + Math.random() * 0.8, trunkR: 0.07 + Math.random() * 0.05, crownR: 0.95 + Math.random() * 0.65, crownStretch: 0.90 + Math.random() * 0.22 }  // broadleaf
+      ),
     })
     return true
   }
@@ -3119,7 +3147,9 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
 
   const wallGeos: any[] = []
   const roofGeos: any[] = []
-  const vegetationGeos: any[] = []
+  const forestGeos2: any[] = []
+  const farmGeos2: any[] = []
+  const grassGeos2: any[] = []
 
   let work = 0
   for (const el of elements) {
@@ -3169,21 +3199,25 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
         tryCollectTree(wp.x, wp.z, getTerrainHeight(wp.x, wp.z))
     }
     const tags = el.tags || {}
-    const isForest  = tags.natural === "wood"   || tags.landuse === "forest"
-    const isPark    = tags.leisure === "park"
-    const isScrub   = tags.natural === "scrub"  || tags.natural === "heath"
+    const isForest  = tags.natural === "wood"    || tags.landuse === "forest"
+    const isScrub   = tags.natural === "scrub"   || tags.natural === "heath"
     const isOrchard = tags.landuse === "orchard"
-    const isGrass   = tags.natural === "grassland"
+    const isFarm    = tags.landuse === "farmland" || tags.landuse === "farm" || tags.landuse === "rice_field" || tags.landuse === "meadow" || tags.natural === "meadow"
+    const isPark    = tags.leisure === "park"
+    const isPitch   = tags.leisure === "pitch"   || tags.leisure === "stadium"
+    const isGrass   = tags.natural === "grassland" || tags.natural === "grass" || tags.landuse === "grass"
     const isGreenArea = (el.type === "way" || el.type === "relation") &&
-      (isForest || isPark || isScrub || isOrchard || isGrass)
+      (isForest || isScrub || isOrchard || isFarm || isPark || isPitch || isGrass)
     if (isGreenArea) {
-      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : 0.25) * treeBudget.densityScale
+      const density = (isForest ? 1.2 : isScrub ? 0.5 : isOrchard ? 0.4 : isFarm ? 0.05 : isPitch ? 0.0 : isGrass ? 0.0 : isPark ? 0.0 : 0.0) * treeBudget.densityScale
+      const vegType: "forest" | "farm" | "grass" = (isForest || isScrub || isOrchard) ? "forest" : isFarm ? "farm" : "grass"
+      const geos2 = vegType === "forest" ? forestGeos2 : vegType === "farm" ? farmGeos2 : grassGeos2
       if (el.type === "way" && (el.nodes?.length ?? 0) >= 3) {
         const pts = collectPts(el.nodes)
         if (pts.length >= 3) {
           const y = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) + 0.025
-          pushGroundOverlayGeometry(pts, y, vegetationGeos)
-          scatterTrees(pts, density)
+          pushGroundOverlayGeometry(pts, y, geos2)
+          if (density > 0) scatterTrees(pts, density)
         }
       }
       if (el.type === "relation" && el.members?.length) {
@@ -3195,8 +3229,8 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
           const pts = collectPts(nids)
           if (pts.length >= 3) {
             const y = getTerrainHeight(pts.reduce((s, p) => s + p.x, 0) / pts.length, pts.reduce((s, p) => s + p.z, 0) / pts.length) + 0.025
-            pushGroundOverlayGeometry(pts, y, vegetationGeos)
-            scatterTrees(pts, density)
+            pushGroundOverlayGeometry(pts, y, geos2)
+            if (density > 0) scatterTrees(pts, density)
           }
         }
       }
@@ -3210,11 +3244,9 @@ async function appendOSMBuildings(elements: any[], centerLat: number, centerLng:
   const group = new THREE.Group()
   if (wallGeos.length) addMergedGeos(wallGeos, new THREE.MeshLambertMaterial({ color: 0xc8c0b8 }), group, true)
   if (roofGeos.length) addMergedGeos(roofGeos, new THREE.MeshLambertMaterial({ color: 0x9e9690 }), group)
-  if (vegetationGeos.length) addMergedGeos(
-    vegetationGeos,
-    new THREE.MeshLambertMaterial({ color: 0x7ea566, transparent: true, opacity: 0.28, depthWrite: false }),
-    group,
-  )
+  if (forestGeos2.length) addMergedGeos(forestGeos2, new THREE.MeshLambertMaterial({ color: 0x3d7a35, transparent: true, opacity: 0.35, depthWrite: false }), group)
+  if (farmGeos2.length)   addMergedGeos(farmGeos2,   new THREE.MeshLambertMaterial({ color: 0xbfd45a, transparent: true, opacity: 0.40, depthWrite: false }), group)
+  if (grassGeos2.length)  addMergedGeos(grassGeos2,  new THREE.MeshLambertMaterial({ color: 0x5eb84e, transparent: true, opacity: 0.30, depthWrite: false }), group)
   if (treeInstances.length) addTreeInstances(treeInstances, group)
   if (group.children.length) {
     osmOuterBuildingGroups.push(group)
@@ -3237,7 +3269,8 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
 
   try {
     // ── ตรวจ Supabase cache ก่อน (ถ้าครบ 7 zones ใช้เลย ไม่ต้อง Overpass) ──
-    try {
+    // super_admin ข้ามแคชเสมอ เพื่อให้ gen ข้อมูลใหม่ทุกครั้ง
+    if (!isMapAdmin.value) try {
       const { data: cacheRows } = await $supabase
         .from('map_cache')
         .select('zone_index,data')
@@ -3253,6 +3286,13 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
           // Cache HIT — render ทั้งหมดจาก cache ไม่ต้องเรียก Overpass
           mapCacheHit.value = true
           mapCacheSaved.value = true
+          // เก็บข้อมูล cache ไว้ใน pending เพื่อให้ admin สามารถบันทึกทับได้
+          osmPendingCenter = centerZone.data
+          osmPendingOuter = Array.from({ length: 6 }, (_, i) => {
+            const oz = cached.find(c => c.zone_index === i)
+            return oz ? (oz.data.elements ?? []) : []
+          })
+          mapCacheReady.value = true
           osmLoadingStep.value = "โหลดจากแคช (ศูนย์กลาง)..."
           osmLoadingPct.value = 10
           await buildOSMScene(centerZone.data, lat, lng, z, token)
@@ -3320,7 +3360,7 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
     const midLng2 = (west + east) / 2
     // เพิ่ม maxsize เป็น 128 MB เพื่อรองรับข้อมูลปริมาณมาก + รวม vegetation เพื่อให้ outer strips มีต้นไม้เหมือนกลาง
     const bldQ = (bb: string) =>
-      `[out:json][timeout:25][maxsize:134217728];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb});node["natural"="tree"](${bb});node["natural"="tree_row"](${bb});way["natural"="wood"](${bb});relation["natural"="wood"](${bb});way["landuse"="forest"](${bb});relation["landuse"="forest"](${bb});way["leisure"="park"](${bb});relation["leisure"="park"](${bb});way["natural"="scrub"](${bb});relation["natural"="scrub"](${bb});way["landuse"="orchard"](${bb});relation["landuse"="orchard"](${bb});way["natural"="grassland"](${bb});relation["natural"="grassland"](${bb});way["natural"="heath"](${bb});relation["natural"="heath"](${bb}););(._;>;);out body;`
+      `[out:json][timeout:25][maxsize:134217728];(way["building"](${bb});relation["building"]["type"="multipolygon"](${bb});node["natural"="tree"](${bb});node["natural"="tree_row"](${bb});way["natural"="wood"](${bb});relation["natural"="wood"](${bb});way["landuse"="forest"](${bb});relation["landuse"="forest"](${bb});way["leisure"="park"](${bb});relation["leisure"="park"](${bb});way["leisure"="pitch"](${bb});relation["leisure"="pitch"](${bb});way["natural"="scrub"](${bb});relation["natural"="scrub"](${bb});way["landuse"="orchard"](${bb});relation["landuse"="orchard"](${bb});way["natural"="grassland"](${bb});relation["natural"="grassland"](${bb});way["natural"="meadow"](${bb});relation["natural"="meadow"](${bb});way["natural"="heath"](${bb});relation["natural"="heath"](${bb});way["landuse"="farmland"](${bb});relation["landuse"="farmland"](${bb});way["landuse"="farm"](${bb});relation["landuse"="farm"](${bb});way["landuse"="meadow"](${bb});relation["landuse"="meadow"](${bb}););(._;>;);out body;`
     // แยก North/South strip เป็น 2 ซีก (ตะวันตก+ออก) เพื่อลดขนาด query ต่อ request
     // → 6 strips แทน 4: แต่ละ strip ≈ 16 tiles แทนที่จะเป็น 33 tiles (ป้องกัน maxsize ถูกตัด)
     // Overpass bbox format: south,west,north,east
@@ -3481,6 +3521,34 @@ async function endMapDrag(commit: boolean) {
   return true
 }
 
+function expandThaiAbbreviations(q: string): string {
+  // \b ไม่รู้จักอักษรไทย ต้องจับ start-of-string หรือช่องว่างก่อนตัวย่อ
+  return q
+    .replace(/(^|\s)จ\.\s*/g, "$1จังหวัด")
+    .replace(/(^|\s)อ\.\s*/g, "$1อำเภอ")
+    .replace(/(^|\s)ต\.\s*/g, "$1ตำบล")
+    .replace(/(^|\s)ด\.\s*/g, "$1ตำบล")
+    .replace(/(^|\s)ม\.\s*/g, "$1หมู่ที่ ")
+    .replace(/(^|\s)ถ\.\s*/g, "$1ถนน")
+    .replace(/(^|\s)ซ\.\s*/g, "$1ซอย")
+    .trim()
+}
+
+async function nominatimSearch(q: string): Promise<{ display: string; fullDisplay: string; lat: number; lng: number }[]> {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&addressdetails=1&namedetails=1&accept-language=th,en&q=${encodeURIComponent(q)}`
+  const res = await fetch(url, { headers: { Accept: "application/json", "Accept-Language": "th,en" } })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const rows = await res.json()
+  return (Array.isArray(rows) ? rows : [])
+    .map((x: any) => {
+      const fullName = String(x.display_name || "").trim()
+      const parts = fullName.split(",").map((p: string) => p.trim()).filter(Boolean)
+      const shortName = parts.length > 3 ? parts.slice(0, 3).join(", ") + "…" : fullName
+      return { display: shortName, fullDisplay: fullName, lat: Number(x.lat), lng: Number(x.lon) }
+    })
+    .filter((x: any) => x.display && Number.isFinite(x.lat) && Number.isFinite(x.lng))
+}
+
 async function searchMapPlace() {
   const query = mapSearchQuery.value.trim()
   if (query.length < 2) {
@@ -3493,19 +3561,28 @@ async function searchMapPlace() {
   mapSearchLoading.value = true
   const token = ++mapSearchToken
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(query)}`
-    const res = await fetch(url, { headers: { Accept: "application/json" } })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const rows = await res.json()
+    // 1) ลองค้นด้วยคำย่อที่ขยายแล้ว
+    const expanded = expandThaiAbbreviations(query)
+    let results = await nominatimSearch(expanded)
     if (token !== mapSearchToken) return
-    mapSearchResults.value = (Array.isArray(rows) ? rows : [])
-      .map((x: any) => ({
-        display: String(x.display_name || "").trim(),
-        lat: Number(x.lat),
-        lng: Number(x.lon),
-      }))
-      .filter((x: any) => x.display && Number.isFinite(x.lat) && Number.isFinite(x.lng))
-      .slice(0, 6)
+
+    // 2) ถ้าไม่เจอ และมีการขยายคำย่อ ลองด้วยคำดิบ
+    if (results.length === 0 && expanded !== query) {
+      results = await nominatimSearch(query)
+      if (token !== mapSearchToken) return
+    }
+
+    // 3) ถ้ายังไม่เจอ ลองตัดเอาแค่ส่วนสุดท้าย (province/district)
+    if (results.length === 0) {
+      const parts = expanded.split(/\s+/)
+      if (parts.length > 1) {
+        const shorter = parts.slice(-2).join(" ")
+        results = await nominatimSearch(shorter)
+        if (token !== mapSearchToken) return
+      }
+    }
+
+    mapSearchResults.value = results.slice(0, 10)
     if (mapSearchResults.value.length === 0) mapSearchError.value = "ไม่พบสถานที่"
   } catch {
     if (token !== mapSearchToken) return
@@ -3516,7 +3593,7 @@ async function searchMapPlace() {
   }
 }
 
-async function applyMapSearchResult(item: { display: string; lat: number; lng: number }) {
+async function applyMapSearchResult(item: { display: string; fullDisplay: string; lat: number; lng: number }) {
   const prev = { lat: mapLat.value, lng: mapLng.value, zoom: mapZoom.value }
   mapLat.value = item.lat
   mapLng.value = item.lng
@@ -6653,7 +6730,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-if="mapSearchResults.length" class="map-search-results">
-          <button v-for="item in mapSearchResults" :key="`${item.lat},${item.lng},${item.display}`" type="button" class="map-result-btn" @click="applyMapSearchResult(item)">{{ item.display }}</button>
+          <button v-for="item in mapSearchResults" :key="`${item.lat},${item.lng},${item.display}`" type="button" class="map-result-btn" :title="item.fullDisplay" @click="applyMapSearchResult(item)">{{ item.display }}</button>
         </div>
         <button type="button" class="drag-select-btn" :class="{ 'ds-active': mapDragSelectOn }" :disabled="!viewerReady" @click="mapDragSelectOn = !mapDragSelectOn">
           <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="2 1.5"><rect x="1" y="1" width="12" height="12" rx="1"/></svg>
@@ -6690,7 +6767,7 @@ onBeforeUnmount(() => {
         </div>
         <!-- ปุ่มบันทึกแผนที่ — เฉพาะ super_admin เท่านั้น -->
         <div v-if="isMapAdmin && !osmBuilding3dLoading && mapCacheReady" style="margin-top:8px">
-          <div v-if="mapCacheHit" style="font-size:10px;color:#22c55e;margin-bottom:4px">โหลดจากแคช ✓</div>
+          <div v-if="mapCacheHit" style="font-size:10px;color:#22c55e;margin-bottom:4px">โหลดจากแคช ✓ (กดเพื่อบันทึกทับ)</div>
           <div v-else-if="mapCacheSaved && !mapCacheSaveMsg" style="font-size:10px;color:#f59e0b;margin-bottom:4px">แคชไว้แล้ว (กดเพื่ออัปเดต)</div>
           <button
             type="button"
