@@ -3392,31 +3392,50 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
       const { bb, label } = outerBboxes[qi]
       if (token !== osmLoadToken) break
       osmLoadingStep.value = `โหลดอาคารรอบนอก (โซน ${qi + 1}/6: ${label})...`
-      for (let attempt = 0; attempt < 2; attempt++) {
-        let fetchOk = false
-        let elements: any[] = []
-        try {
-          const res = await fetchOuterStrip(bb)
-          const d = await res.json()
-          elements = d.elements ?? []
-          fetchOk = true
-        } catch (err) {
-          console.warn(`[OSM outer] ${label} attempt ${attempt + 1} fetch failed:`, err)
-          if (attempt === 0) await new Promise(r => setTimeout(r, 2000))
-          continue
+
+      let elements: any[] = []
+
+      // ── 1. ลอง Supabase cache ก่อน ──
+      try {
+        const { data: cachedZone } = await $supabase
+          .from('map_cache')
+          .select('data')
+          .eq('tile_x', tileX)
+          .eq('tile_y', tileY)
+          .eq('zoom', z)
+          .eq('zone_index', qi)
+          .single()
+        if (cachedZone?.data?.elements?.length) {
+          elements = cachedZone.data.elements
+          osmLoadingStep.value = `โหลดอาคารรอบนอก (โซน ${qi + 1}/6: แคช ✓)`
         }
-        if (!fetchOk) continue
-        try {
-          if (elements.length > 0 && token === osmLoadToken)
-            await appendOSMBuildings(elements, lat, lng, z, token)
-          if (token === osmLoadToken) {
-            osmPendingOuter[qi] = elements  // เก็บไว้ให้ admin save
-            osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 10)
+      } catch { /* ไม่มี cache — ลอง Overpass ต่อ */ }
+
+      // ── 2. ถ้าไม่มี cache ลอง Overpass ──
+      if (!elements.length) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const res = await fetchOuterStrip(bb)
+            const d = await res.json()
+            elements = d.elements ?? []
+            break
+          } catch (err) {
+            console.warn(`[OSM outer] ${label} attempt ${attempt + 1} fetch failed:`, err)
+            if (attempt === 0) await new Promise(r => setTimeout(r, 2000))
           }
-        } catch (err) {
-          console.warn(`[OSM outer] ${label} appendOSMBuildings failed:`, err)
         }
-        break
+      }
+
+      // ── 3. Render ──
+      try {
+        if (elements.length > 0 && token === osmLoadToken)
+          await appendOSMBuildings(elements, lat, lng, z, token)
+        if (token === osmLoadToken) {
+          osmPendingOuter[qi] = elements  // เก็บไว้ให้ admin save
+          osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 10)
+        }
+      } catch (err) {
+        console.warn(`[OSM outer] ${label} appendOSMBuildings failed:`, err)
       }
     }
     if (token === osmLoadToken) {
