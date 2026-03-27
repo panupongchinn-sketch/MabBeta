@@ -5,6 +5,9 @@ definePageMeta({ layout: 'empty' })
 
 const { user: authUser, signOut, initSession, refreshUser } = useCustomAuth()
 if (!authUser.value) initSession()
+const isMapAdmin = computed(() =>
+  authUser.value?.role === 'super_admin' || authUser.value?.email === 'panupong.chinn@gmail.com'
+)
 
 const onLogout = () => {
   signOut()
@@ -363,6 +366,16 @@ const osmFetchInFlight = new Map<string, Promise<OSMSceneData>>() // dedup concu
 const osmBuilding3dLoading = ref(false)
 const osmLoadingPct = ref(0)
 const osmLoadingStep = ref("")
+const mapCacheSaving = ref(false)
+const mapCacheSaveMsg = ref("")
+const mapCacheHit = ref(false)    // true = โหลดจาก Supabase cache
+const mapCacheSaved = ref(false)  // true = tile นี้มี cache อยู่แล้ว
+const mapCacheReady = ref(false)  // true = มีข้อมูลพร้อมให้ admin บันทึก
+let osmPendingCenter: any = null                    // OSMSceneData สำหรับ save
+let osmPendingOuter: (any[] | null)[] = Array(6).fill(null) // elements ของแต่ละ outer zone
+let osmCacheTileX = 0
+let osmCacheTileY = 0
+let osmCacheZoom  = 0
 let trafficGroup: any = null
 let trafficLoadToken = 0
 let trafficRefreshTimer: any = null
@@ -3213,8 +3226,55 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
   const token = osmLoadToken
   osmBuilding3dLoading.value = true
   osmLoadingPct.value = 0
-  osmLoadingStep.value = "กำลังดึงข้อมูล OSM..."
+  osmLoadingStep.value = "ตรวจสอบแคชแผนที่..."
+
+  // ── Reset cache-related state ──────────────────────────────────────────────
+  const tileX = Math.floor(lonToTileX(lng, z))
+  const tileY = Math.floor(latToTileY(lat, z))
+  osmCacheTileX = tileX; osmCacheTileY = tileY; osmCacheZoom = z
+  osmPendingCenter = null; osmPendingOuter = Array(6).fill(null)
+  mapCacheHit.value = false; mapCacheSaved.value = false; mapCacheSaveMsg.value = ""; mapCacheReady.value = false
+
   try {
+    // ── ตรวจ Supabase cache ก่อน (ถ้าครบ 7 zones ใช้เลย ไม่ต้อง Overpass) ──
+    try {
+      const cacheRes = await fetch(`/api/map-cache?tileX=${tileX}&tileY=${tileY}&zoom=${z}`)
+      if (cacheRes.ok && token === osmLoadToken) {
+        const cached: { zone_index: number; data: any }[] = await cacheRes.json()
+        const centerZone = cached.find(c => c.zone_index === -1)
+        const outerZones = cached.filter(c => c.zone_index >= 0 && c.zone_index <= 5)
+        if (centerZone && outerZones.length === 6) {
+          // Cache HIT — render ทั้งหมดจาก cache ไม่ต้องเรียก Overpass
+          mapCacheHit.value = true
+          mapCacheSaved.value = true
+          osmLoadingStep.value = "โหลดจากแคช (ศูนย์กลาง)..."
+          osmLoadingPct.value = 10
+          await buildOSMScene(centerZone.data, lat, lng, z, token)
+          if (token !== osmLoadToken) return
+          osmLoadingPct.value = 40
+          for (let qi = 0; qi < 6; qi++) {
+            if (token !== osmLoadToken) break
+            const oz = cached.find(c => c.zone_index === qi)
+            if (!oz) continue
+            osmLoadingStep.value = `โหลดจากแคช (โซน ${qi + 1}/6)...`
+            await appendOSMBuildings(oz.data.elements ?? [], lat, lng, z, token)
+            if (token === osmLoadToken)
+              osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 10)
+          }
+          if (token === osmLoadToken) {
+            osmLoadingPct.value = 100
+            osmLoadingStep.value = "โหลดจากแคชครบแล้ว ✓"
+            await new Promise(r => setTimeout(r, 1200))
+          }
+          return
+        } else if (cached.length > 0) {
+          mapCacheSaved.value = true // มี cache บางส่วน (admin อาจบันทึกค้างไว้)
+        }
+      }
+    } catch { /* cache check ล้มเหลว — โหลดตามปกติ */ }
+
+    osmLoadingStep.value = "กำลังดึงข้อมูล OSM..."
+
     // Phase 1 = 0–20%: center buildings + trees + Supabase
     let data: any = null
     for (let attempt = 1; attempt <= 3 && !data; attempt++) {
@@ -3231,6 +3291,8 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
       }
     }
     if (!data || token !== osmLoadToken) return
+
+    osmPendingCenter = data; mapCacheReady.value = true  // เก็บไว้ให้ admin save
 
     osmLoadingStep.value = "กำลัง render อาคาร (ศูนย์กลาง)..."
     osmLoadingPct.value = 25
@@ -3264,9 +3326,7 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
       { bb: `${cS2},${west},${cN2},${cW2}`,         label: "แถบตะวันตก" },
       { bb: `${cS2},${cE2},${cN2},${east}`,         label: "แถบตะวันออก" },
     ]
-    // Phase 2: 6 strips พร้อมกัน — แต่ละ strip ใช้ sequential fallback (kumi → overpass-api.de)
-    // ไม่ใช้ Promise.any เพราะทำให้ยิง 12 requests พร้อมกัน → Overpass rate-limit ทุก strip
-    osmLoadingStep.value = "โหลดอาคารรอบนอก (6 โซนพร้อมกัน)..."
+    // Phase 2: 6 strips ทีละโซน — สร้างเสร็จโซนหนึ่งก่อนค่อยไปโซนถัดไป
     const fetchOuterStrip = async (bb: string): Promise<Response> => {
       const url = (host: string) =>
         `${host}/api/interpreter?data=${encodeURIComponent(bldQ(bb))}`
@@ -3282,10 +3342,10 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
         return r
       }
     }
-    await Promise.allSettled(outerBboxes.map(async ({ bb, label }, qi) => {
-      // stagger 200ms ต่อ strip เพื่อไม่ให้ยิง 6 requests พร้อมกันทันที
-      await new Promise(r => setTimeout(r, qi * 200))
-      if (token !== osmLoadToken) return
+    for (let qi = 0; qi < outerBboxes.length; qi++) {
+      const { bb, label } = outerBboxes[qi]
+      if (token !== osmLoadToken) break
+      osmLoadingStep.value = `โหลดอาคารรอบนอก (โซน ${qi + 1}/6: ${label})...`
       for (let attempt = 0; attempt < 2; attempt++) {
         let fetchOk = false
         let elements: any[] = []
@@ -3303,15 +3363,16 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
         try {
           if (elements.length > 0 && token === osmLoadToken)
             await appendOSMBuildings(elements, lat, lng, z, token)
-          if (token === osmLoadToken)
+          if (token === osmLoadToken) {
+            osmPendingOuter[qi] = elements  // เก็บไว้ให้ admin save
             osmLoadingPct.value = Math.max(osmLoadingPct.value, 40 + (qi + 1) * 10)
+          }
         } catch (err) {
           console.warn(`[OSM outer] ${label} appendOSMBuildings failed:`, err)
         }
-        return
+        break
       }
-      console.warn(`[OSM outer] ${label} ล้มเหลวทุก attempt`)
-    }))
+    }
     if (token === osmLoadToken) {
       osmLoadingPct.value = 100
       osmLoadingStep.value = "โหลดอาคารครบแล้ว ✓"
@@ -3326,6 +3387,40 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
       osmLoadingPct.value = 0
       osmLoadingStep.value = ""
     }
+  }
+}
+
+async function saveMapCache() {
+  if (!isMapAdmin.value) return
+  if (!osmPendingCenter || !mapCacheReady.value) { mapCacheSaveMsg.value = "ยังไม่มีข้อมูล — โหลดแผนที่ก่อน"; return }
+  mapCacheSaving.value = true
+  mapCacheSaveMsg.value = ""
+  try {
+    const zones = [
+      { zoneIndex: -1, data: osmPendingCenter },
+      ...osmPendingOuter.map((els, i) => ({ zoneIndex: i, data: { elements: els ?? [] } })),
+    ]
+    for (const zone of zones) {
+      const res = await fetch('/api/map-cache', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tileX: osmCacheTileX,
+          tileY: osmCacheTileY,
+          zoom: osmCacheZoom,
+          zoneIndex: zone.zoneIndex,
+          data: zone.data,
+          userId: authUser.value?.id,
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+    }
+    mapCacheSaved.value = true
+    mapCacheSaveMsg.value = "บันทึกแผนที่สำเร็จ ✓"
+  } catch (err: any) {
+    mapCacheSaveMsg.value = `บันทึกล้มเหลว: ${err.message}`
+  } finally {
+    mapCacheSaving.value = false
   }
 }
 
@@ -6585,6 +6680,22 @@ onBeforeUnmount(() => {
             <div :style="{ width: osmLoadingPct + '%', background: osmLoadingPct === 100 ? '#22c55e' : '#38bdf8', height: '100%', transition: 'width .4s ease' }"></div>
           </div>
           <div style="color:#64748b;font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ osmLoadingStep }}</div>
+        </div>
+        <!-- ปุ่มบันทึกแผนที่ — เฉพาะ super_admin เท่านั้น -->
+        <div v-if="isMapAdmin && !osmBuilding3dLoading && mapCacheReady" style="margin-top:8px">
+          <div v-if="mapCacheHit" style="font-size:10px;color:#22c55e;margin-bottom:4px">โหลดจากแคช ✓</div>
+          <div v-else-if="mapCacheSaved && !mapCacheSaveMsg" style="font-size:10px;color:#f59e0b;margin-bottom:4px">แคชไว้แล้ว (กดเพื่ออัปเดต)</div>
+          <button
+            type="button"
+            class="apply-btn"
+            style="background:linear-gradient(135deg,#0f4c81,#1a6fb5);margin-top:0"
+            :disabled="mapCacheSaving"
+            @click="saveMapCache"
+          >
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M2 2h8l2 2v8H2z"/><rect x="4" y="8" width="6" height="4"/><rect x="4" y="2" width="5" height="3"/></svg>
+            {{ mapCacheSaving ? 'กำลังบันทึก...' : 'บันทึกแผนที่' }}
+          </button>
+          <div v-if="mapCacheSaveMsg" :style="{ fontSize:'10px', marginTop:'4px', color: mapCacheSaveMsg.includes('✓') ? '#22c55e' : '#f87171' }">{{ mapCacheSaveMsg }}</div>
         </div>
         <p v-if="mapSearchError" class="err-text">{{ mapSearchError }}</p>
         <p class="attrib-text">© OpenStreetMap · CartoDB</p>
