@@ -3238,11 +3238,17 @@ async function loadOSMScene(lat: number, lng: number, z: number) {
   try {
     // ── ตรวจ Supabase cache ก่อน (ถ้าครบ 7 zones ใช้เลย ไม่ต้อง Overpass) ──
     try {
-      const cacheRes = await fetch(`/api/map-cache?tileX=${tileX}&tileY=${tileY}&zoom=${z}`)
-      if (cacheRes.ok && token === osmLoadToken) {
-        const cached: { zone_index: number; data: any }[] = await cacheRes.json()
-        const centerZone = cached.find(c => c.zone_index === -1)
-        const outerZones = cached.filter(c => c.zone_index >= 0 && c.zone_index <= 5)
+      const { data: cacheRows } = await $supabase
+        .from('map_cache')
+        .select('zone_index,data')
+        .eq('tile_x', tileX)
+        .eq('tile_y', tileY)
+        .eq('zoom', z)
+        .order('zone_index')
+      if (cacheRows && token === osmLoadToken) {
+        const cached: { zone_index: number; data: any }[] = cacheRows
+        const centerZone = cached.find((c: any) => c.zone_index === -1)
+        const outerZones = cached.filter((c: any) => c.zone_index >= 0 && c.zone_index <= 5)
         if (centerZone && outerZones.length === 6) {
           // Cache HIT — render ทั้งหมดจาก cache ไม่ต้องเรียก Overpass
           mapCacheHit.value = true
@@ -3401,19 +3407,18 @@ async function saveMapCache() {
       ...osmPendingOuter.map((els, i) => ({ zoneIndex: i, data: { elements: els ?? [] } })),
     ]
     for (const zone of zones) {
-      const res = await fetch('/api/map-cache', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tileX: osmCacheTileX,
-          tileY: osmCacheTileY,
+      const { error } = await $supabase
+        .from('map_cache')
+        .upsert({
+          tile_x: osmCacheTileX,
+          tile_y: osmCacheTileY,
           zoom: osmCacheZoom,
-          zoneIndex: zone.zoneIndex,
+          zone_index: zone.zoneIndex,
           data: zone.data,
-          userId: authUser.value?.id,
-        }),
-      })
-      if (!res.ok) throw new Error(await res.text())
+          created_by: authUser.value?.id ?? null,
+          saved_at: new Date().toISOString(),
+        }, { onConflict: 'tile_x,tile_y,zoom,zone_index' })
+      if (error) throw new Error(error.message)
     }
     mapCacheSaved.value = true
     mapCacheSaveMsg.value = "บันทึกแผนที่สำเร็จ ✓"
